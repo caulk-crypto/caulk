@@ -1,4 +1,4 @@
-# caulk-dev
+# caulk
 Linkable vector commitments and lookup tables.
 
 WARNING:  This project contains a proof of concept implementation of Caulk that has not received any formal audit.  It should not be used production.
