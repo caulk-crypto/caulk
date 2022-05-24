@@ -1,0 +1,6 @@
+[workspace] 
+
+members = [
+    "caulk_multi_lookup",
+    "caulk_single_opening"
+]
