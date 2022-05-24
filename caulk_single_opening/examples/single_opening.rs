@@ -1,25 +1,23 @@
 use ark_bls12_381::{Bls12_381, Fr, G1Affine};
 use ark_ec::{AffineCurve, ProjectiveCurve};
+use ark_poly::univariate::DensePolynomial;
 use ark_poly::{EvaluationDomain, GeneralEvaluationDomain, Polynomial, UVPolynomial};
 use ark_poly_commit::kzg10::KZG10;
+use ark_std::test_rng;
+use ark_std::UniformRand;
+use caulk_single_opening::caulk_single_setup;
+use caulk_single_opening::multiple_open;
+use caulk_single_opening::{caulk_single_prove, caulk_single_verify};
+use caulk_single_opening::{kzg_open_g1, read_line};
 use std::time::Instant;
 
-mod caulk_single;
-mod caulk_single_setup;
-mod caulk_single_unity;
-mod multiopen;
-mod pedersen;
-mod tools;
-
-use crate::caulk_single::{caulk_single_prove, caulk_single_verify};
-use crate::caulk_single_setup::caulk_single_setup;
-use crate::multiopen::multiple_open;
-use crate::tools::{kzg_open_g1, random_field, read_line, UniPoly381};
-
-pub type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
+type UniPoly381 = DensePolynomial<Fr>;
+type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
 
 #[allow(non_snake_case)]
 fn main() {
+    let mut rng = test_rng();
+
     // setting public parameters
     // current kzg setup should be changed with output from a setup ceremony
     println!("What is the bitsize of the degree of the polynomial inside the commitment? ");
@@ -29,7 +27,7 @@ fn main() {
 
     // run the setup
     let now = Instant::now();
-    let pp = caulk_single_setup(max_degree, actual_degree);
+    let pp = caulk_single_setup(max_degree, actual_degree, &mut rng);
     println!(
         "Time to setup single openings of table size {:?} = {:?}",
         actual_degree + 1,
@@ -39,8 +37,7 @@ fn main() {
     //polynomial and commitment
     let now = Instant::now();
     // deterministic randomness.  Should never be used in practice.
-    let rng = &mut ark_std::test_rng();
-    let c_poly = UniPoly381::rand(actual_degree, rng);
+    let c_poly = UniPoly381::rand(actual_degree, &mut rng);
     let (g1_C, _) = KzgBls12_381::commit(&pp.poly_ck, &c_poly, None, None).unwrap();
     let g1_C = g1_C.0;
     println!(
@@ -68,7 +65,7 @@ fn main() {
     if (open_all == "NO") || (open_all == "No") || (open_all == "no") {
         // Q = g1_q = g^( (c(x) - c(w_i)) / (x - w_i) )
         let now = Instant::now();
-        let a = kzg_open_g1(&pp.poly_ck, &c_poly, None, [&omega_i].to_vec());
+        let a = kzg_open_g1(&pp.poly_ck, &c_poly, None, &[omega_i]);
         println!(
             "Time to KZG open one element from table size {:?} = {:?}",
             actual_degree + 1,
@@ -90,7 +87,7 @@ fn main() {
 
     // z = c(w_i) and cm = g^z h^r for random r
     let z = c_poly.evaluate(&omega_i);
-    let r = random_field::<Fr>();
+    let r = Fr::rand(&mut rng);
     let cm = (pp.ped_g.mul(z) + pp.ped_h.mul(r)).into_affine();
 
     // run the prover
@@ -98,9 +95,9 @@ fn main() {
     let number_of_openings: usize = read_line();
     let now = Instant::now();
 
-    let mut proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r);
+    let mut proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
     for _ in 1..(number_of_openings - 1) {
-        proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r);
+        proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
     }
     println!(
         "Time to evaluate {} single openings of table size {:?} = {:?}",

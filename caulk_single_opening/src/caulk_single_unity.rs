@@ -3,110 +3,108 @@ This file includes the Caulk's unity prover and verifier for single openings.
 The protocol is described in Figure 2.
 */
 
-use ark_bls12_381::{Bls12_381, Fr, FrParameters, G1Affine, G2Affine};
-use ark_ec::{bls12::Bls12, AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_ff::{Field, Fp256};
+use crate::tools::{hash_caulk_single, kzg_open_g1, kzg_verify_g1};
+use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
+use ark_ff::Field;
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain,
     GeneralEvaluationDomain, Polynomial, UVPolynomial,
 };
 use ark_poly_commit::kzg10::*;
 use ark_std::{cfg_into_iter, One, Zero};
-
-use crate::tools::{
-    hash_caulk_single, kzg_open_g1, kzg_verify_g1, random_field, KzgBls12_381, UniPoly381,
-};
+use ark_std::{rand::RngCore, UniformRand};
 
 // prover public parameters structure for caulk_single_unity_prove
 #[allow(non_snake_case)]
-pub struct PublicParametersUnity {
-    pub poly_ck: Powers<'static, Bls12<ark_bls12_381::Parameters>>,
-    pub gxd: G1Affine,
-    pub gxpen: G1Affine,
-    pub lagrange_polynomials_Vn: Vec<UniPoly381>,
-    pub poly_prod: UniPoly381,
+pub struct PublicParametersUnity<E: PairingEngine> {
+    pub poly_ck: Powers<'static, E>,
+    pub gxd: E::G1Affine,
+    pub gxpen: E::G1Affine,
+    pub lagrange_polynomials_Vn: Vec<DensePolynomial<E::Fr>>,
+    pub poly_prod: DensePolynomial<E::Fr>,
     pub logN: usize,
-    pub domain_Vn: GeneralEvaluationDomain<Fr>,
+    pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
 }
 
 // verifier parameters structure for caulk_single_unity_verify
 #[allow(non_snake_case)]
-pub struct VerifierPublicParametersUnity {
-    pub poly_vk: VerifierKey<Bls12<ark_bls12_381::Parameters>>,
-    pub gxpen: G1Affine,
-    pub g1: G1Affine,
-    pub g1_x: G1Affine,
-    pub lagrange_scalars_Vn: Vec<Fr>,
-    pub poly_prod: UniPoly381,
+pub struct VerifierPublicParametersUnity<E: PairingEngine> {
+    pub poly_vk: VerifierKey<E>,
+    pub gxpen: E::G1Affine,
+    pub g1: E::G1Affine,
+    pub g1_x: E::G1Affine,
+    pub lagrange_scalars_Vn: Vec<E::Fr>,
+    pub poly_prod: DensePolynomial<E::Fr>,
     pub logN: usize,
-    pub domain_Vn: GeneralEvaluationDomain<Fr>,
-    pub powers_of_g2: Vec<G2Affine>,
+    pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
+    pub powers_of_g2: Vec<E::G2Affine>,
 }
 
 // output structure of caulk_single_unity_prove
 #[allow(non_snake_case)]
-pub struct CaulkProofUnity {
-    pub g1_F: G1Affine,
-    pub g1_H: G1Affine,
-    pub v1: Fp256<FrParameters>,
-    pub v2: Fp256<FrParameters>,
-    pub pi1: G1Affine,
-    pub pi2: G1Affine,
-    //    pub g1_q3: G1Affine,
+pub struct CaulkProofUnity<E: PairingEngine> {
+    pub g1_F: E::G1Affine,
+    pub g1_H: E::G1Affine,
+    pub v1: E::Fr,
+    pub v2: E::Fr,
+    pub pi1: E::G1Affine,
+    pub pi2: E::G1Affine,
 }
 
 // Prove knowledge of a, b such that g2_z = [ax - b]_2 and a^n = b^n
 #[allow(non_snake_case)]
-pub fn caulk_single_unity_prove(
-    pp: &PublicParametersUnity,
-    hash_input: &mut Fr,
-    g2_z: G2Affine,
-    a: Fp256<FrParameters>,
-    b: Fp256<FrParameters>,
-) -> CaulkProofUnity {
+pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
+    pp: &PublicParametersUnity<E>,
+    hash_input: &mut E::Fr,
+    g2_z: &E::G2Affine,
+    a: &E::Fr,
+    b: &E::Fr,
+    rng: &mut R,
+) -> CaulkProofUnity<E> {
     // a_poly = a X - b
-    let a_poly = DensePolynomial::from_coefficients_slice(&[-b, a]);
+    let a_poly = DensePolynomial::from_coefficients_slice(&[-*b, *a]);
 
     // provers blinders for zero-knowledge
-    let r0: Fp256<FrParameters> = random_field::<Fr>();
-    let r1: Fp256<FrParameters> = random_field::<Fr>();
-    let r2: Fp256<FrParameters> = random_field::<Fr>();
-    let r3: Fp256<FrParameters> = random_field::<Fr>();
+    let r0 = E::Fr::rand(rng);
+    let r1 = E::Fr::rand(rng);
+    let r2 = E::Fr::rand(rng);
+    let r3 = E::Fr::rand(rng);
+
     let r_poly = DensePolynomial::from_coefficients_slice(&[r1, r2, r3]);
 
     // roots of unity in domain of size m = log_2(n) + 6
     let sigma = pp.domain_Vn.element(1);
 
     // X^n - 1
-    let z: UniPoly381 = pp.domain_Vn.vanishing_polynomial().into();
+    let z: DensePolynomial<E::Fr> = pp.domain_Vn.vanishing_polynomial().into();
 
     // computing [ (a/b), (a/b)^2, (a/b)^4, ..., (a/b)^(2^logN) = (a/b)^n ]
-    let mut a_div_b = a * (b.inverse()).unwrap();
-    let mut vec_a_div_b: Vec<Fp256<FrParameters>> = Vec::new();
+    let mut a_div_b = *a * ((*b).inverse()).unwrap();
+    let mut vec_a_div_b: Vec<E::Fr> = Vec::new();
     for _ in 0..(pp.logN + 1) {
-        vec_a_div_b.push(a_div_b.clone());
+        vec_a_div_b.push(a_div_b);
         a_div_b = a_div_b * a_div_b;
     }
 
     ////////////////////////////
     // computing f(X).  First compute in domain.
     ////////////////////////////
-    let f_evals: Vec<Fp256<FrParameters>> = cfg_into_iter!(0..pp.domain_Vn.size())
+    let f_evals: Vec<E::Fr> = cfg_into_iter!(0..pp.domain_Vn.size())
         .map(|k| {
             if k == 0 {
-                a - b
+                *a - *b
             } else if k == 1 {
-                a * sigma - b
+                *a * sigma - *b
             } else if k == 2 {
-                a
+                *a
             } else if k == 3 {
-                b
+                *b
             } else if k > 3 && k < (pp.logN + 5) {
                 vec_a_div_b[k - 4]
             } else if k == pp.logN + 5 {
                 r0
             } else {
-                Fr::zero()
+                E::Fr::zero()
             }
         })
         .collect();
@@ -117,14 +115,14 @@ pub fn caulk_single_unity_prove(
     // computing f( sigma^(-1) X) and f( sigma^(-2) X)
     let mut f_poly_shift_1 = f_poly.clone();
     let mut f_poly_shift_2 = f_poly.clone();
-    let mut shift_1 = Fr::one();
-    let mut shift_2 = Fr::one();
+    let mut shift_1 = E::Fr::one();
+    let mut shift_2 = E::Fr::one();
 
     for i in 0..f_poly.len() {
-        f_poly_shift_1[i] = f_poly_shift_1[i] * shift_1;
-        f_poly_shift_2[i] = f_poly_shift_2[i] * shift_2;
-        shift_1 = shift_1 * pp.domain_Vn.element(pp.domain_Vn.size() - 1);
-        shift_2 = shift_2 * pp.domain_Vn.element(pp.domain_Vn.size() - 2);
+        f_poly_shift_1[i]  *= shift_1;
+        f_poly_shift_2[i]  *= shift_2;
+        shift_1  *= pp.domain_Vn.element(pp.domain_Vn.size() - 1);
+        shift_2  *= pp.domain_Vn.element(pp.domain_Vn.size() - 2);
     }
 
     ////////////////////////////
@@ -137,7 +135,8 @@ pub fn caulk_single_unity_prove(
 
     // p(X) = p(X) + ( (1 - sigma) f(X) -  f(sigma^(-2)X) + f(sigma^(-1) X) ) rho_3(X)
     p_poly = &p_poly
-        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(Fr::one() - sigma)]) * &f_poly)
+        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(E::Fr::one() - sigma)])
+            * &f_poly)
             - &f_poly_shift_2)
             + &f_poly_shift_1)
             * &pp.lagrange_polynomials_Vn[2]);
@@ -158,7 +157,7 @@ pub fn caulk_single_unity_prove(
 
     // p(X) = p(X) + (  f(sigma^(-1) X) -  1    ) rho_(logN + 6)(X)
     p_poly = &p_poly
-        + &(&(&f_poly_shift_1 - &(DensePolynomial::from_coefficients_slice(&[Fr::one()])))
+        + &(&(&f_poly_shift_1 - &(DensePolynomial::from_coefficients_slice(&[E::Fr::one()])))
             * &pp.lagrange_polynomials_Vn[pp.logN + 5]);
 
     // Compute h_hat_poly = p(X) / z_Vn(X) and abort if division is not perfect
@@ -168,25 +167,20 @@ pub fn caulk_single_unity_prove(
     ////////////////////////////
     // Commit to f(X) and h(X)
     ////////////////////////////
-    let (g1_F, _) = KzgBls12_381::commit(&pp.poly_ck, &f_poly, None, None).unwrap();
-    let g1_F: G1Affine = g1_F.0;
-    let (h_hat_com, _) = KzgBls12_381::commit(&pp.poly_ck, &h_hat_poly, None, None).unwrap();
+    let (g1_F, _) = KZG10::commit(&pp.poly_ck, &f_poly, None, None).unwrap();
+    let g1_F: E::G1Affine = g1_F.0;
+    let (h_hat_com, _) = KZG10::commit(&pp.poly_ck, &h_hat_poly, None, None).unwrap();
 
     // g1_H is a commitment to h_hat_poly + X^(d-1) z(X)
-    let g1_H = h_hat_com.0 + (pp.gxd.mul(-a) + pp.gxpen.mul(b)).into_affine();
+    let g1_H = h_hat_com.0 + (pp.gxd.mul(-*a) + pp.gxpen.mul(*b)).into_affine();
 
     ////////////////////////////
     // alpha = Hash([z]_2, [F]_1, [H]_1)
     ////////////////////////////
 
-    let alpha = hash_caulk_single::<Fr>(
-        hash_input.clone(),
-        Some(&[g1_F, g1_H].to_vec()),
-        Some(&[g2_z].to_vec()),
-        None,
-    );
+    let alpha = hash_caulk_single::<E>(hash_input, Some(&[g1_F, g1_H]), Some(&[*g2_z]), None);
 
-    *hash_input = alpha.clone();
+    *hash_input = alpha;
 
     ////////////////////////////
     // v1 = f(sigma^(-1) alpha) and v2 = f(w^(-2) alpha)
@@ -226,7 +220,8 @@ pub fn caulk_single_unity_prove(
 
     // p_alpha(X) = p_alpha(X) + ( (1-sigma) f(X) - v2 + v1 ) rho3(alpha)
     p_alpha_poly = &p_alpha_poly
-        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(Fr::one() - sigma)]) * &f_poly)
+        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(E::Fr::one() - sigma)])
+            * &f_poly)
             - &pv2)
             + &pv1)
             * &prho3);
@@ -248,46 +243,44 @@ pub fn caulk_single_unity_prove(
     We use p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(logN + 6)(alpha) to allow for any value of logN
      */
     p_alpha_poly = &p_alpha_poly
-        + &(&(&pv1 - &(DensePolynomial::from_coefficients_slice(&[Fr::one()]))) * &prhologN6);
+        + &(&(&pv1 - &(DensePolynomial::from_coefficients_slice(&[E::Fr::one()]))) * &prhologN6);
 
     ////////////////////////////
     // Compute opening proofs
     ////////////////////////////
 
     // KZG.Open(srs_KZG, f(X), deg = bot, (alpha1, alpha2))
-    let (_evals1, pi1) = kzg_open_g1(&pp.poly_ck, &f_poly, None, [&alpha1, &alpha2].to_vec());
+    let (_evals1, pi1) = kzg_open_g1(&pp.poly_ck, &f_poly, None, [alpha1, alpha2].as_ref());
 
     // KZG.Open(srs_KZG, p_alpha(X), deg = bot, alpha)
-    let (evals2, pi2) = kzg_open_g1(&pp.poly_ck, &p_alpha_poly, None, [&alpha].to_vec());
+    let (evals2, pi2) = kzg_open_g1(&pp.poly_ck, &p_alpha_poly, None, &[alpha]);
 
     // abort if p_alpha( alpha) != 0
     assert!(
-        evals2[0] == Fr::zero(),
+        evals2[0] == E::Fr::zero(),
         "p_alpha(X) does not equal 0 at alpha"
     );
 
-    let proof = CaulkProofUnity {
-        g1_F: g1_F,
-        g1_H: g1_H,
-        v1: v1,
-        v2: v2,
-        pi1: pi1,
-        pi2: pi2,
-    };
-
-    proof
+    CaulkProofUnity {
+        g1_F,
+        g1_H,
+        v1,
+        v2,
+        pi1,
+        pi2,
+    }
 }
 
 // Verify that the prover knows a, b such that g2_z = g2^(a x - b) and a^n = b^n
 #[allow(non_snake_case)]
-pub fn caulk_single_unity_verify(
-    vk: &VerifierPublicParametersUnity,
-    hash_input: &mut Fr,
-    g2_z: &G2Affine,
-    proof: &CaulkProofUnity,
+pub fn caulk_single_unity_verify<E: PairingEngine>(
+    vk: &VerifierPublicParametersUnity<E>,
+    hash_input: &mut E::Fr,
+    g2_z: &E::G2Affine,
+    proof: &CaulkProofUnity<E>,
 ) -> bool {
     // g2_z must not be the identity
-    assert!(g2_z.is_zero() == false, "g2_z is the identity");
+    assert!(!g2_z.is_zero(), "g2_z is the identity");
 
     // roots of unity in domain of size m = log1_2(n) + 6
     let sigma = vk.domain_Vn.element(1);
@@ -298,17 +291,17 @@ pub fn caulk_single_unity_verify(
     // alpha = Hash(A, F, H)
     ////////////////////////////
 
-    let alpha = hash_caulk_single::<Fr>(
-        hash_input.clone(),
-        Some(&[proof.g1_F, proof.g1_H].to_vec()),
-        Some(&[g2_z.clone()].to_vec()),
+    let alpha = hash_caulk_single::<E>(
+        hash_input,
+        Some(&[proof.g1_F, proof.g1_H]),
+        Some(&[*g2_z]),
         None,
     );
-    *hash_input = alpha.clone();
+    *hash_input = alpha;
 
     // alpha1 = sigma^(-1) alpha and alpha2 = sigma^(-2) alpha
-    let alpha1: Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 1);
-    let alpha2: Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 2);
+    let alpha1: E::Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 1);
+    let alpha2: E::Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 2);
 
     ///////////////////////////////
     // Compute P = commitment to p_alpha(X)
@@ -347,9 +340,10 @@ pub fn caulk_single_unity_verify(
     let g1_p = proof.g1_H.mul(-zalpha)
         + proof
             .g1_F
-            .mul(rho0 + rho1 + (Fr::one() - sigma) * rho2 + rho3 + v1 * rho4 + pprod)
+            .mul(rho0 + rho1 + (E::Fr::one() - sigma) * rho2 + rho3 + v1 * rho4 + pprod)
         + vk.g1.mul(
-            (v1 - v2) * rho2 + (v2 - sigma * v1) * rho3 - v2 * rho4 + (v1 - Fr::one()) * rhologN5
+            (v1 - v2) * rho2 + (v2 - sigma * v1) * rho3 - v2 * rho4
+                + (v1 - E::Fr::one()) * rhologN5
                 - v1 * v1 * pprod,
         );
 
@@ -361,17 +355,17 @@ pub fn caulk_single_unity_verify(
     // KZG opening check
     ///////////////////////////////
 
-    let check1 = kzg_verify_g1(
-        &[vk.g1, vk.g1_x].to_vec(),
+    let check1 = kzg_verify_g1::<E>(
+        [vk.g1, vk.g1_x].as_ref(),
         &vk.powers_of_g2,
-        proof.g1_F,
+        &proof.g1_F,
         None,
-        [alpha1, alpha2].to_vec(),
-        [proof.v1, proof.v2].to_vec(),
-        proof.pi1,
+        [alpha1, alpha2].as_ref(),
+        [proof.v1, proof.v2].as_ref(),
+        &proof.pi1,
     );
 
-    let g1_q = proof.pi2.clone();
+    let g1_q = proof.pi2;
 
     // check that e(P Q3^(-alpha), g2)e( g^(-(rho0 + rho1) - zH(alpha) x^(d-1)), A ) e( Q3, g2^x ) = 1
     // Had  to move A from affine to projective and back to affine to get it to compile.
@@ -388,7 +382,7 @@ pub fn caulk_single_unity_verify(
         ((-g1_q).into(), vk.poly_vk.prepared_beta_h.clone()),
     ];
 
-    let check2 = Bls12_381::product_of_pairings(&eq1).is_one();
+    let check2 = E::product_of_pairings(&eq1).is_one();
 
-    return check1 && check2;
+    check1 && check2
 }

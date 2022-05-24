@@ -3,10 +3,11 @@ This file includes the Caulk prover and verifier for single openings.
 The protocol is described in Figure 1.
 */
 
-use ark_bls12_381::{Bls12_381, Fr, G1Affine, G2Affine};
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
+use ark_std::rand::RngCore;
+use ark_std::UniformRand;
 use ark_std::{One, Zero};
 
 use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
@@ -15,16 +16,16 @@ use crate::caulk_single_unity::{
     VerifierPublicParametersUnity,
 };
 use crate::pedersen::{prove_pedersen, verify_pedersen, ProofPed};
-use crate::tools::{hash_caulk_single, random_field};
+use crate::tools::hash_caulk_single;
 
 // Structure of opening proofs output by prove.
 #[allow(non_snake_case)]
-pub struct CaulkProof {
-    pub g2_z: G2Affine,
-    pub g1_T: G1Affine,
-    pub g2_S: G2Affine,
-    pub pi_ped: ProofPed,
-    pub pi_unity: CaulkProofUnity,
+pub struct CaulkProof<E: PairingEngine> {
+    pub g2_z: E::G2Affine,
+    pub g1_T: E::G1Affine,
+    pub g2_S: E::G2Affine,
+    pub pi_ped: ProofPed<E>,
+    pub pi_unity: CaulkProofUnity<E>,
 }
 
 //Proves knowledge of (i, Q, z, r) such that
@@ -33,20 +34,22 @@ pub struct CaulkProof {
 
 //Takes as input opening proof Q. Does not need knowledge of contents of C  = g1_C.
 #[allow(non_snake_case)]
-pub fn caulk_single_prove(
-    pp: &PublicParameters,
-    g1_C: &G1Affine,
-    cm: &G1Affine,
+#[allow(clippy::too_many_arguments)]
+pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
+    pp: &PublicParameters<E>,
+    g1_C: &E::G1Affine,
+    cm: &E::G1Affine,
     index: usize,
-    g1_q: &G1Affine,
-    v: &Fr,
-    r: &Fr,
-) -> CaulkProof {
+    g1_q: &E::G1Affine,
+    v: &E::Fr,
+    r: &E::Fr,
+    rng: &mut R,
+) -> CaulkProof<E> {
     // provers blinders for zero-knowledge
-    let a: Fr = random_field::<Fr>();
-    let s: Fr = random_field::<Fr>();
+    let a = E::Fr::rand(rng);
+    let s = E::Fr::rand(rng);
 
-    let domain_H: GeneralEvaluationDomain<Fr> =
+    let domain_H: GeneralEvaluationDomain<E::Fr> =
         GeneralEvaluationDomain::new(pp.domain_H_size).unwrap();
 
     ///////////////////////////////
@@ -68,80 +71,76 @@ pub fn caulk_single_prove(
     ///////////////////////////////
 
     // hash the instance and the proof elements to determine hash inputs for Pedersen prover
-    let mut hash_input = hash_caulk_single::<Fr>(
-        Fr::zero(),
-        Some(&[g1_C.clone(), g1_T.clone()].to_vec()),
-        Some(&[g2_z.clone(), g2_S.clone()].to_vec()),
+    let mut hash_input = hash_caulk_single::<E>(
+        &E::Fr::zero(),
+        Some(&[*g1_C, g1_T]),
+        Some(&[g2_z, g2_S]),
         None,
     );
 
     // proof that cm = g^z h^rs
-    let pi_ped = prove_pedersen(&pp.ped_g, &pp.ped_h, &mut hash_input, &cm, v, r);
+    let pi_ped = prove_pedersen::<E, R>(&pp.ped_g, &pp.ped_h, &mut hash_input, cm, v, r, rng);
 
     ///////////////////////////////
     // Unity prove
     ///////////////////////////////
 
     // hash the last round of the pedersen proof to determine hash input to the unity prover
-    hash_input = hash_caulk_single::<Fr>(
-        hash_input,
+    hash_input = hash_caulk_single::<E>(
+        &hash_input,
         None,
         None,
-        Some(&[pi_ped.t1.clone(), pi_ped.t2.clone()].to_vec()),
+        Some(&[pi_ped.t1, pi_ped.t2]),
     );
 
     // Setting up the public parameters for the unity prover
     let pp_unity = PublicParametersUnity {
         poly_ck: pp.poly_ck.clone(),
-        gxd: pp.poly_ck_d.clone(),
-        gxpen: pp.poly_ck_pen.clone(),
+        gxd: pp.poly_ck_d,
+        gxpen: pp.poly_ck_pen,
         lagrange_polynomials_Vn: pp.lagrange_polynomials_Vn.clone(),
         poly_prod: pp.poly_prod.clone(),
-        logN: pp.logN.clone(),
-        domain_Vn: pp.domain_Vn.clone(),
+        logN: pp.logN,
+        domain_Vn: pp.domain_Vn,
     };
 
     // proof that A = [a x - b ]_2 for a^n = b^n
     let pi_unity = caulk_single_unity_prove(
         &pp_unity,
         &mut hash_input,
-        g2_z,
-        a,
-        a * domain_H.element(index),
+        &g2_z,
+        &a,
+        &(a * domain_H.element(index)),
+        rng,
     );
 
-    let proof = CaulkProof {
-        g2_z: g2_z,
-        g1_T: g1_T,
-        g2_S: g2_S,
-        pi_ped: pi_ped,
-        pi_unity: pi_unity,
-    };
-
-    proof
+    CaulkProof {
+        g2_z,
+        g1_T,
+        g2_S,
+        pi_ped,
+        pi_unity,
+    }
 }
 
 //Verifies that the prover knows of (i, Q, z, r) such that
 // 1) Q is a KZG opening proof that  g1_C opens to z at i
 // 2) cm = g^z h^r
 #[allow(non_snake_case)]
-pub fn caulk_single_verify(
-    vk: &VerifierPublicParameters,
-    g1_C: &G1Affine,
-    cm: &G1Affine,
-    proof: &CaulkProof,
+pub fn caulk_single_verify<E: PairingEngine>(
+    vk: &VerifierPublicParameters<E>,
+    g1_C: &E::G1Affine,
+    cm: &E::G1Affine,
+    proof: &CaulkProof<E>,
 ) -> bool {
     ///////////////////////////////
     // Pairing check
     ///////////////////////////////
 
     // check that e( - C + cm, [1]_2) + e( [T]_1, [z]_2 ) + e( [h]_1, [S]_2 ) = 1
-    let eq1: Vec<(
-        ark_ec::bls12::G1Prepared<ark_bls12_381::Parameters>,
-        ark_ec::bls12::G2Prepared<ark_bls12_381::Parameters>,
-    )> = vec![
+    let eq1: Vec<(E::G1Prepared, E::G2Prepared)> = vec![
         (
-            (g1_C.mul(-Fr::one()) + cm.into_projective())
+            (g1_C.mul(-E::Fr::one()) + cm.into_projective())
                 .into_affine()
                 .into(),
             vk.poly_vk.prepared_h.clone(),
@@ -150,44 +149,44 @@ pub fn caulk_single_verify(
         (vk.ped_h.into(), proof.g2_S.into()),
     ];
 
-    let check1 = Bls12_381::product_of_pairings(&eq1).is_one();
+    let check1 = E::product_of_pairings(&eq1).is_one();
 
     ///////////////////////////////
     // Pedersen check
     ///////////////////////////////
 
     // hash the instance and the proof elements to determine hash inputs for Pedersen prover
-    let mut hash_input = hash_caulk_single::<Fr>(
-        Fr::zero(),
-        Some(&[g1_C.clone(), proof.g1_T.clone()].to_vec()),
-        Some(&[proof.g2_z.clone(), proof.g2_S.clone()].to_vec()),
+    let mut hash_input = hash_caulk_single::<E>(
+        &E::Fr::zero(),
+        Some(&[*g1_C, proof.g1_T]),
+        Some(&[proof.g2_z, proof.g2_S]),
         None,
     );
 
     // verify that cm = [v + r h]
-    let check2 = verify_pedersen(&vk.ped_g, &vk.ped_h, &mut hash_input, &cm, &proof.pi_ped);
+    let check2 = verify_pedersen::<E>(&vk.ped_g, &vk.ped_h, &mut hash_input, cm, &proof.pi_ped);
 
     ///////////////////////////////
     // Unity check
     ///////////////////////////////
 
     // hash the last round of the pedersen proof to determine hash input to the unity prover
-    hash_input = hash_caulk_single::<Fr>(
-        hash_input,
+    hash_input = hash_caulk_single::<E>(
+        &hash_input,
         None,
         None,
-        Some(&[proof.pi_ped.t1.clone(), proof.pi_ped.t2.clone()].to_vec()),
+        Some(&[proof.pi_ped.t1, proof.pi_ped.t2]),
     );
 
     let vk_unity = VerifierPublicParametersUnity {
         poly_vk: vk.poly_vk.clone(),
-        gxpen: vk.poly_ck_pen.clone(),
-        g1: vk.ped_g.clone(),
-        g1_x: vk.g1_x.clone(),
+        gxpen: vk.poly_ck_pen,
+        g1: vk.ped_g,
+        g1_x: vk.g1_x,
         lagrange_scalars_Vn: vk.lagrange_scalars_Vn.clone(),
         poly_prod: vk.poly_prod.clone(),
-        logN: vk.logN.clone(),
-        domain_Vn: vk.domain_Vn.clone(),
+        logN: vk.logN,
+        domain_Vn: vk.domain_Vn,
         powers_of_g2: vk.powers_of_g2.clone(),
     };
 
@@ -195,5 +194,5 @@ pub fn caulk_single_verify(
     let check3 =
         caulk_single_unity_verify(&vk_unity, &mut hash_input, &proof.g2_z, &proof.pi_unity);
 
-    return check1 && check2 && check3;
+    check1 && check2 && check3
 }

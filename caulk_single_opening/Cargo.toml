@@ -16,6 +16,7 @@ ark-relations = { version = "^0.3.0", default-features = false }
 ark-crypto-primitives = { version = "^0.3.0", default-features = false }
 ark-r1cs-std = { version = "^0.3.0", default-features = false, optional = true }
 ark-bls12-381 = { version = "^0.3.0", features = [ "std" ] }
+ark-bls12-377 = { version = "^0.3.0", features = [ "std" ] }
 ark-poly-commit = { version = "^0.3.0", default-features = false }
 ark-marlin = { version = "^0.3.0", default-features = false }
 
@@ -26,6 +27,17 @@ rand_chacha = { version = "0.2.1" }
 thiserror = "1.0.19"
 blake2s_simd = "0.5.10"
 
+rayon = { version = "1.5.2", default-features = false, optional = true }
 
 [features]
 asm = [ "ark-ff/asm" ]
+parallel = [ 
+    "rayon",
+    "ark-std/parallel", 
+    "ark-ff/parallel",  
+    "ark-poly/parallel" 
+    ]
+print-trace = [
+    "ark-std/print-trace"
+]
+

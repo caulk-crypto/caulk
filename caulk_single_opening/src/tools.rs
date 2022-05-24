@@ -7,23 +7,16 @@ This file includes backend tools:
 (5) random_field is for generating random field elements
 */
 
-use ark_bls12_381::{Bls12_381, Fr, G1Affine, G1Projective, G2Affine};
+use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{univariate::DensePolynomial, Polynomial, UVPolynomial};
+use ark_poly_commit::kzg10::*;
 use ark_serialize::CanonicalSerialize;
 use ark_std::{One, Zero};
-
 use blake2s_simd::Params;
-use rand::{thread_rng, Rng, SeedableRng};
+use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
 use std::{error::Error, io, str::FromStr};
-
-use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_poly::univariate::DensePolynomial as DensePoly;
-use ark_poly_commit::kzg10::*;
-
-pub type UniPoly381 = DensePoly<<Bls12_381 as PairingEngine>::Fr>;
-pub type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
 
 // Function for reading inputs from the command line.
 pub fn read_line<T: FromStr>() -> T
@@ -42,11 +35,10 @@ where
 //
 
 //copied from arkworks
-fn convert_to_bigints<F: PrimeField>(p: &Vec<F>) -> Vec<F::BigInt> {
-    let coeffs = ark_std::cfg_iter!(p)
+fn convert_to_bigints<F: PrimeField>(p: &[F]) -> Vec<F::BigInt> {
+    ark_std::cfg_iter!(p)
         .map(|s| s.into_repr())
-        .collect::<Vec<_>>();
-    coeffs
+        .collect::<Vec<_>>()
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -58,48 +50,47 @@ KZG.Open( srs_KZG, f(X), deg, (alpha1, alpha2, ..., alphan) )
 returns ([f(alpha1), ..., f(alphan)], pi)
 Algorithm described in Section 4.6.1, Multiple Openings
 */
-pub fn kzg_open_g1(
-    poly_ck: &Powers<Bls12_381>,
-    poly: &DensePolynomial<Fr>,
+pub fn kzg_open_g1<E: PairingEngine>(
+    poly_ck: &Powers<E>,
+    poly: &DensePolynomial<E::Fr>,
     max_deg: Option<&usize>,
-    points: Vec<&Fr>,
-) -> (Vec<Fr>, G1Affine) {
+    points: &[E::Fr],
+) -> (Vec<E::Fr>, E::G1Affine) {
     let mut evals = Vec::new();
     let mut proofs = Vec::new();
-    for i in 0..points.len() {
-        let (eval, pi) = kzg_open_g1_single(poly_ck, poly, max_deg, points[i]);
+    for p in points.iter() {
+        let (eval, pi) = kzg_open_g1_single(poly_ck, poly, max_deg, p);
         evals.push(eval);
         proofs.push(pi);
     }
 
-    let mut res: G1Projective = G1Projective::zero(); //default value
+    let mut res: E::G1Projective = E::G1Projective::zero(); //default value
 
     for j in 0..points.len() {
-        let w_j = points[j].clone();
+        let w_j = points[j];
         //1. Computing coefficient [1/prod]
-        let mut prod = Fr::one();
-        for k in 0..points.len() {
-            let w_k = points[k];
+        let mut prod = E::Fr::one();
+        for (k, p) in points.iter().enumerate() {
             if k != j {
-                prod = prod * (w_j - w_k);
+                prod *= w_j - p;
             }
         }
         //2. Summation
         let q_add = proofs[j].mul(prod.inverse().unwrap()); //[1/prod]Q_{j}
-        res = res + q_add;
+        res += q_add;
     }
 
-    return (evals, res.into_affine());
+    (evals, res.into_affine())
 }
 
 //KZG.Open( srs_KZG, f(X), deg, alpha ) returns (f(alpha), pi)
-fn kzg_open_g1_single(
-    poly_ck: &Powers<Bls12_381>,
-    poly: &DensePolynomial<Fr>,
+fn kzg_open_g1_single<E: PairingEngine>(
+    poly_ck: &Powers<E>,
+    poly: &DensePolynomial<E::Fr>,
     max_deg: Option<&usize>,
-    point: &Fr,
-) -> (Fr, G1Affine) {
-    let eval = poly.evaluate(&point);
+    point: &E::Fr,
+) -> (E::Fr, E::G1Affine) {
+    let eval = poly.evaluate(point);
 
     let global_max_deg = poly_ck.powers_of_g.len();
 
@@ -109,45 +100,45 @@ fn kzg_open_g1_single(
     } else {
         d += max_deg.unwrap();
     }
-    let divisor = DensePolynomial::from_coefficients_vec(vec![-point.clone(), Fr::one()]);
+    let divisor = DensePolynomial::from_coefficients_vec(vec![-*point, E::Fr::one()]);
     let witness_polynomial = poly / &divisor;
 
     assert!(poly_ck.powers_of_g[(global_max_deg - d)..].len() >= witness_polynomial.len());
     let proof = VariableBaseMSM::multi_scalar_mul(
         &poly_ck.powers_of_g[(global_max_deg - d)..],
-        &convert_to_bigints(&witness_polynomial.coeffs).as_slice(),
+        convert_to_bigints(&witness_polynomial.coeffs).as_slice(),
     )
     .into_affine();
-    return (eval, proof);
+    (eval, proof)
 }
 
 /*
 // KZG.Verify( srs_KZG, F, deg, (alpha1, alpha2, ..., alphan), (v1, ..., vn), pi )
 Algorithm described in Section 4.6.1, Multiple Openings
 */
-pub fn kzg_verify_g1(
+pub fn kzg_verify_g1<E: PairingEngine>(
     //Verify that @c_com is a commitment to C(X) such that C(x)=z
-    powers_of_g1: &Vec<G1Affine>, // generator of G1
-    powers_of_g2: &Vec<G2Affine>, // [1]_2, [x]_2, [x^2]_2, ...
-    c_com: G1Affine,              //commitment
+    powers_of_g1: &[E::G1Affine], // generator of G1
+    powers_of_g2: &[E::G2Affine], // [1]_2, [x]_2, [x^2]_2, ...
+    c_com: &E::G1Affine,          //commitment
     max_deg: Option<&usize>,      // max degree
-    points: Vec<Fr>,              // x such that eval = C(x)
-    evals: Vec<Fr>,               //evaluation
-    pi: G1Affine,                 //proof
+    points: &[E::Fr],             // x such that eval = C(x)
+    evals: &[E::Fr],              //evaluation
+    pi: &E::G1Affine,             //proof
 ) -> bool {
     // Interpolation set
     // tau_i(X) = lagrange_tau[i] = polynomial equal to 0 at point[j] for j!= i and 1  at points[i]
 
-    let mut lagrange_tau = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+    let mut lagrange_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
+    // TODO: improve the efficiency here to linear
     for i in 0..points.len() {
-        let mut temp: UniPoly381 = DensePolynomial::from_coefficients_slice(&[Fr::one()]);
-        for j in 0..points.len() {
+        let mut temp = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
+        for (j, &p) in points.iter().enumerate() {
             if i != j {
-                temp =
-                    &temp * (&DensePolynomial::from_coefficients_slice(&[-points[j], Fr::one()]));
+                temp = &temp * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
             }
         }
-        let lagrange_scalar = temp.evaluate(&points[i]).inverse().unwrap() * &evals[i];
+        let lagrange_scalar = temp.evaluate(&points[i]).inverse().unwrap() * evals[i];
         lagrange_tau =
             lagrange_tau + &temp * (&DensePolynomial::from_coefficients_slice(&[lagrange_scalar]));
     }
@@ -165,9 +156,9 @@ pub fn kzg_verify_g1(
 
     // vanishing polynomial
     // z_tau[i] = polynomial equal to 0 at point[j]
-    let mut z_tau = DensePolynomial::from_coefficients_slice(&[Fr::one()]);
-    for i in 0..points.len() {
-        z_tau = &z_tau * (&DensePolynomial::from_coefficients_slice(&[-points[i], Fr::one()]));
+    let mut z_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
+    for &p in points.iter() {
+        z_tau = &z_tau * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
     }
 
     // commit to z_tau(X) in g2
@@ -189,13 +180,18 @@ pub fn kzg_verify_g1(
         d += max_deg.unwrap();
     }
 
-    let pairing1 = Bls12_381::pairing(
-        c_com.into_projective() - g1_tau,
-        powers_of_g2[global_max_deg - d],
-    );
-    let pairing2 = Bls12_381::pairing(pi, g2_z_tau);
+    let pairing_inputs = vec![
+        (
+            E::G1Prepared::from((c_com.into_projective() - g1_tau).into_affine()),
+            E::G2Prepared::from(powers_of_g2[global_max_deg - d]),
+        ),
+        (
+            E::G1Prepared::from(*pi),
+            E::G2Prepared::from(g2_z_tau.into_affine()),
+        ),
+    ];
 
-    return pairing1 == pairing2;
+    E::product_of_pairings(pairing_inputs.iter()).is_one()
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -213,20 +209,15 @@ fn rng_from_message(personalization: &[u8], message: &[u8]) -> ChaChaRng {
         .finalize();
     let mut seed = [0u8; 32];
     seed.copy_from_slice(hash.as_bytes());
-    let rng = ChaChaRng::from_seed(seed);
-    rng
+    ChaChaRng::from_seed(seed)
 }
 
+// statistical uniform with bias < 2^-128 for field size < 384 bits
 fn hash_to_field<F: PrimeField>(personalization: &[u8], message: &[u8]) -> F {
     let mut rng = rng_from_message(personalization, message);
-    loop {
-        let bytes: Vec<u8> = (0..F::zero().serialized_size())
-            .map(|_| rng.gen())
-            .collect();
-        if let Some(p) = F::from_random_bytes(&bytes) {
-            return p;
-        }
-    }
+    let mut buf = [0u8; 64];
+    rng.fill_bytes(&mut buf);
+    F::from_le_bytes_mod_order(buf.as_ref())
 }
 
 /* hash function that takes as input:
@@ -237,98 +228,31 @@ fn hash_to_field<F: PrimeField>(personalization: &[u8], message: &[u8]) -> F {
 
 It returns a field element.
 */
-pub fn hash_caulk_single<F: PrimeField>(
-    state: Fr,
-    g1_elements: Option<&Vec<G1Affine>>,
-    g2_elements: Option<&Vec<G2Affine>>,
-    field_elements: Option<&Vec<Fr>>,
-) -> Fr {
+pub fn hash_caulk_single<E: PairingEngine>(
+    state: &E::Fr,
+    g1_elements: Option<&[E::G1Affine]>,
+    g2_elements: Option<&[E::G2Affine]>,
+    field_elements: Option<&[E::Fr]>,
+) -> E::Fr {
     // PERSONALIZATION distinguishes this hash from other hashes that may be in the system
     const PERSONALIZATION: &[u8] = b"CAULK1";
 
-    ///////////////////////////////////////////////////////////
-    // Handling cases where no g1_elements or no g1_elements or no field elements are input
-    ///////////////////////////////////////////////////////////
-    let g1_elements_len: usize;
-    let g2_elements_len: usize;
-    let field_elements_len: usize;
+    let mut hash_input = vec![];
+    state.serialize(&mut hash_input).ok();
 
-    if g1_elements == None {
-        g1_elements_len = 0;
-    } else {
-        g1_elements_len = g1_elements.unwrap().len();
+    match g1_elements {
+        None => (),
+        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
     }
-
-    if g2_elements == None {
-        g2_elements_len = 0;
-    } else {
-        g2_elements_len = g2_elements.unwrap().len();
+    match g2_elements {
+        None => (),
+        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
     }
-
-    if field_elements == None {
-        field_elements_len = 0;
-    } else {
-        field_elements_len = field_elements.unwrap().len();
-    }
-
-    ///////////////////////////////////////////////////////////
-    // Transform inputs into bytes
-    ///////////////////////////////////////////////////////////
-    let mut state_bytes = vec![];
-    state.serialize(&mut state_bytes).ok();
-
-    let mut g1_elements_bytes = Vec::new();
-    for i in 0..g1_elements_len {
-        let mut temp = vec![];
-        g1_elements.unwrap()[i].serialize(&mut temp).ok();
-        g1_elements_bytes.append(&mut temp.clone());
-    }
-
-    let mut g2_elements_bytes = Vec::new();
-    for i in 0..g2_elements_len {
-        let mut temp = vec![];
-        g2_elements.unwrap()[i].serialize(&mut temp).ok();
-        g2_elements_bytes.append(&mut temp.clone());
-    }
-
-    let mut field_elements_bytes = Vec::new();
-    for i in 0..field_elements_len {
-        let mut temp = vec![];
-        field_elements.unwrap()[i].serialize(&mut temp).ok();
-        field_elements_bytes.append(&mut temp.clone());
-    }
-
-    // Transform bytes into vector of bytes of the form expected by hash_to_field
-    let mut hash_input: Vec<u8> = state_bytes.clone();
-    for i in 0..g1_elements_bytes.len() {
-        hash_input = [&hash_input as &[_], &[g1_elements_bytes[i]]].concat();
-    }
-
-    for i in 0..g2_elements_bytes.len() {
-        hash_input = [&hash_input as &[_], &[g2_elements_bytes[i]]].concat();
-    }
-
-    for i in 0..field_elements_bytes.len() {
-        hash_input = [&hash_input as &[_], &[field_elements_bytes[i]]].concat();
+    match field_elements {
+        None => (),
+        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
     }
 
     // hash_to_field
-    return hash_to_field::<Fr>(PERSONALIZATION, &hash_input);
-}
-
-/////////////////////////////////////////////////////////////////////
-// Random field element
-/////////////////////////////////////////////////////////////////////
-
-// generating a random field element
-pub fn random_field<F: PrimeField>() -> F {
-    let mut rng = thread_rng();
-    loop {
-        let bytes: Vec<u8> = (0..F::zero().serialized_size())
-            .map(|_| rng.gen())
-            .collect();
-        if let Some(p) = F::from_random_bytes(&bytes) {
-            return p;
-        }
-    }
+    hash_to_field::<E::Fr>(PERSONALIZATION, &hash_input)
 }
