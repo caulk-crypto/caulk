@@ -17,6 +17,8 @@ use blake2s_simd::Params;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
 use std::{error::Error, io, str::FromStr};
+#[cfg(feature = "parallel")]
+use rayon::iter::{IntoParallelRefIterator,ParallelIterator};
 
 // Function for reading inputs from the command line.
 pub fn read_line<T: FromStr>() -> T

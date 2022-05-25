@@ -13,6 +13,8 @@ use ark_poly::{
 use ark_poly_commit::kzg10::*;
 use ark_std::{cfg_into_iter, One, Zero};
 use ark_std::{rand::RngCore, UniformRand};
+#[cfg(feature = "parallel")]
+use rayon::iter::{IntoParallelIterator,ParallelIterator};
 
 // prover public parameters structure for caulk_single_unity_prove
 #[allow(non_snake_case)]
@@ -79,7 +81,7 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     let z: DensePolynomial<E::Fr> = pp.domain_Vn.vanishing_polynomial().into();
 
     // computing [ (a/b), (a/b)^2, (a/b)^4, ..., (a/b)^(2^logN) = (a/b)^n ]
-    let mut a_div_b = *a * ((*b).inverse()).unwrap();
+    let mut a_div_b = *a * (*b).inverse().unwrap();
     let mut vec_a_div_b: Vec<E::Fr> = Vec::new();
     for _ in 0..(pp.logN + 1) {
         vec_a_div_b.push(a_div_b);
