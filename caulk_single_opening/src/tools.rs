@@ -130,21 +130,22 @@ pub fn kzg_verify_g1<E: PairingEngine>(
     // tau_i(X) = lagrange_tau[i] = polynomial equal to 0 at point[j] for j!= i and 1  at points[i]
 
     let mut lagrange_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
-    // TODO: improve the efficiency here to linear
+    let mut prod = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
+    let mut components = vec![];
+    for  &p in points.iter() {
+            let poly = DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]);
+            prod = &prod * (&poly);
+            components.push(poly);
+    }
+   
     for i in 0..points.len() {
-        let mut temp = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
-        for (j, &p) in points.iter().enumerate() {
-            if i != j {
-                temp = &temp * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
-            }
-        }
+        let mut temp = &prod / &components[i];
         let lagrange_scalar = temp.evaluate(&points[i]).inverse().unwrap() * evals[i];
-        lagrange_tau =
-            lagrange_tau + &temp * (&DensePolynomial::from_coefficients_slice(&[lagrange_scalar]));
+        temp.coeffs.iter_mut().for_each(|x|*x = *x * lagrange_scalar);
+        lagrange_tau = lagrange_tau + temp;
     }
 
     // commit to sum evals[i] tau_i(X)
-
     assert!(
         powers_of_g1.len() >= lagrange_tau.len(),
         "KZG verifier doesn't have enough g1 powers"
@@ -156,10 +157,11 @@ pub fn kzg_verify_g1<E: PairingEngine>(
 
     // vanishing polynomial
     // z_tau[i] = polynomial equal to 0 at point[j]
-    let mut z_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
-    for &p in points.iter() {
-        z_tau = &z_tau * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
-    }
+    // let mut z_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
+    // for &p in points.iter() {
+    //     z_tau = &z_tau * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
+    // }
+    let z_tau = prod;
 
     // commit to z_tau(X) in g2
     assert!(
@@ -182,7 +184,7 @@ pub fn kzg_verify_g1<E: PairingEngine>(
 
     let pairing_inputs = vec![
         (
-            E::G1Prepared::from((c_com.into_projective() - g1_tau).into_affine()),
+            E::G1Prepared::from((g1_tau - c_com.into_projective()).into_affine()),
             E::G2Prepared::from(powers_of_g2[global_max_deg - d]),
         ),
         (
