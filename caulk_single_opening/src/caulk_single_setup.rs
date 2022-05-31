@@ -3,7 +3,7 @@ This file includes the setup algorithm for Caulk with single openings.
 A full description of the setup is not formally given in the paper.
 */
 
-use crate::PedersonParam;
+use crate::PedersenParam;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, UniformRand};
 use ark_poly::{
@@ -22,17 +22,8 @@ use std::cmp::max;
 pub struct PublicParameters<E: PairingEngine> {
     pub poly_ck: Powers<'static, E>,
     pub poly_ck_d: E::G1Affine,
-    pub poly_ck_pen: E::G1Affine,
     pub lagrange_polynomials_Vn: Vec<DensePolynomial<E::Fr>>,
-    pub poly_prod: DensePolynomial<E::Fr>,
-    pub poly_vk: VerifierKey<E>,
-    pub pedersen_param: PedersonParam<E::G1Affine>,
-    pub domain_H_size: usize,
-    pub logN: usize,
-    pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
-    pub domain_Vn_size: usize,
     pub verifier_pp: VerifierPublicParameters<E>,
-    pub actual_degree: usize,
 }
 
 // smaller set of public parameters used by verifier
@@ -42,12 +33,11 @@ pub struct VerifierPublicParameters<E: PairingEngine> {
     pub lagrange_scalars_Vn: Vec<E::Fr>,
     pub poly_prod: DensePolynomial<E::Fr>,
     pub poly_vk: VerifierKey<E>,
-    pub pedersen_param: PedersonParam<E::G1Affine>,
+    pub pedersen_param: PedersenParam<E::G1Affine>,
     pub g1_x: E::G1Affine,
     pub domain_H_size: usize,
     pub logN: usize,
     pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
-    pub domain_Vn_size: usize,
     pub powers_of_g2: Vec<E::G2Affine>,
 }
 
@@ -206,31 +196,21 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
     let verifier_pp = VerifierPublicParameters {
         poly_ck_pen,
         lagrange_scalars_Vn,
-        poly_prod: poly_prod.clone(),
-        poly_vk: poly_vk.clone(),
-        pedersen_param: PedersonParam { g: ped_g, h: ped_h },
+        poly_prod,
+        poly_vk,
+        pedersen_param: PedersenParam { g: ped_g, h: ped_h },
         g1_x: srs.powers_of_g[1],
         domain_H_size: domain_H.size(),
         logN,
         domain_Vn,
-        domain_Vn_size: domain_Vn.size(),
         powers_of_g2,
     };
 
     let pp = PublicParameters {
         poly_ck,
         poly_ck_d,
-        poly_ck_pen,
         lagrange_polynomials_Vn,
-        poly_prod,
-        pedersen_param: PedersonParam { g: ped_g, h: ped_h },
-        domain_H_size: domain_H.size(),
-        logN,
-        poly_vk,
-        domain_Vn_size: domain_Vn.size(),
-        domain_Vn,
         verifier_pp,
-        actual_degree,
     };
 
     end_timer!(total_time);

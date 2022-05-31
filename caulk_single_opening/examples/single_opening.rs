@@ -6,9 +6,9 @@ use ark_poly_commit::kzg10::KZG10;
 use ark_std::test_rng;
 use ark_std::UniformRand;
 use caulk_single_opening::caulk_single_setup;
-use caulk_single_opening::kzg_open_g1;
 use caulk_single_opening::multiple_open;
 use caulk_single_opening::CaulkTranscript;
+use caulk_single_opening::KZGCommit;
 use caulk_single_opening::{caulk_single_prove, caulk_single_verify};
 use std::time::Instant;
 use std::{error::Error, io, str::FromStr};
@@ -80,7 +80,7 @@ fn main() {
     if (open_all == "NO") || (open_all == "No") || (open_all == "no") {
         // Q = g1_q = g^( (c(x) - c(w_i)) / (x - w_i) )
         let now = Instant::now();
-        let a = kzg_open_g1(&pp.poly_ck, &c_poly, None, &[omega_i]);
+        let a = KZGCommit::open_g1_batch(&pp.poly_ck, &c_poly, None, &[omega_i]);
         println!(
             "Time to KZG open one element from table size {:?} = {:?}",
             actual_degree + 1,
@@ -103,7 +103,8 @@ fn main() {
     // z = c(w_i) and cm = g^z h^r for random r
     let z = c_poly.evaluate(&omega_i);
     let r = Fr::rand(&mut rng);
-    let cm = (pp.pedersen_param.g.mul(z) + pp.pedersen_param.h.mul(r)).into_affine();
+    let cm = (pp.verifier_pp.pedersen_param.g.mul(z) + pp.verifier_pp.pedersen_param.h.mul(r))
+        .into_affine();
 
     let mut prover_transcript = CaulkTranscript::<Fr>::new();
     let mut verifier_transcript = CaulkTranscript::<Fr>::new();

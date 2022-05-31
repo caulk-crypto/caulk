@@ -8,18 +8,18 @@ mod transcript;
 
 pub use caulk_single::{caulk_single_prove, caulk_single_verify};
 pub use caulk_single_setup::caulk_single_setup;
-pub use kzg::kzg_open_g1;
+pub use kzg::KZGCommit;
 pub use multiopen::multiple_open;
-pub use pedersen::PedersonParam;
+pub use pedersen::PedersenParam;
 pub use transcript::CaulkTranscript;
 
 #[cfg(test)]
 mod tests {
 
     use crate::caulk_single_setup;
-    use crate::kzg_open_g1;
     use crate::multiple_open;
     use crate::CaulkTranscript;
+    use crate::KZGCommit;
     use crate::{caulk_single_prove, caulk_single_verify};
     use ark_bls12_381::{Bls12_381, Fr};
     use ark_ec::{AffineCurve, ProjectiveCurve};
@@ -61,14 +61,16 @@ mod tests {
             // z = c(w_i) and cm = g^z h^r for random r
             let z = c_poly.evaluate(&omega_i);
             let r = Fr::rand(&mut rng);
-            let cm = (pp.pedersen_param.g.mul(z) + pp.pedersen_param.h.mul(r)).into_affine();
+            let cm = (pp.verifier_pp.pedersen_param.g.mul(z)
+                + pp.verifier_pp.pedersen_param.h.mul(r))
+            .into_affine();
 
             let mut prover_transcript = CaulkTranscript::<Fr>::new();
             let mut verifier_transcript = CaulkTranscript::<Fr>::new();
 
             // open single position at 0
             {
-                let a = kzg_open_g1(&pp.poly_ck, &c_poly, None, &[omega_i]);
+                let a = KZGCommit::open_g1_batch(&pp.poly_ck, &c_poly, None, &[omega_i]);
                 let g1_q = a.1;
 
                 // run the prover

@@ -3,7 +3,8 @@ This file includes the Caulk's unity prover and verifier for single openings.
 The protocol is described in Figure 2.
 */
 
-use crate::kzg::{kzg_open_g1, kzg_verify_g1};
+use crate::caulk_single_setup::PublicParameters;
+use crate::kzg::KZGCommit;
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::Field;
@@ -52,6 +53,20 @@ pub struct CaulkProofUnity<E: PairingEngine> {
     pub v2: E::Fr,
     pub pi1: E::G1Affine,
     pub pi2: E::G1Affine,
+}
+
+impl<E: PairingEngine> From<&PublicParameters<E>> for PublicParametersUnity<E> {
+    fn from(pp: &PublicParameters<E>) -> Self {
+        Self {
+            poly_ck: pp.poly_ck.clone(),
+            gxd: pp.poly_ck_d,
+            gxpen: pp.verifier_pp.poly_ck_pen,
+            lagrange_polynomials_Vn: pp.lagrange_polynomials_Vn.clone(),
+            poly_prod: pp.verifier_pp.poly_prod.clone(),
+            logN: pp.verifier_pp.logN,
+            domain_Vn: pp.verifier_pp.domain_Vn,
+        }
+    }
 }
 
 // Prove knowledge of a, b such that g2_z = [ax - b]_2 and a^n = b^n
@@ -253,10 +268,11 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     ////////////////////////////
 
     // KZG.Open(srs_KZG, f(X), deg = bot, (alpha1, alpha2))
-    let (_evals1, pi1) = kzg_open_g1(&pp.poly_ck, &f_poly, None, [alpha1, alpha2].as_ref());
+    let (_evals1, pi1) =
+        KZGCommit::open_g1_batch(&pp.poly_ck, &f_poly, None, [alpha1, alpha2].as_ref());
 
     // KZG.Open(srs_KZG, p_alpha(X), deg = bot, alpha)
-    let (evals2, pi2) = kzg_open_g1(&pp.poly_ck, &p_alpha_poly, None, &[alpha]);
+    let (evals2, pi2) = KZGCommit::open_g1_batch(&pp.poly_ck, &p_alpha_poly, None, &[alpha]);
 
     // abort if p_alpha( alpha) != 0
     assert!(
@@ -354,7 +370,7 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     // KZG opening check
     ///////////////////////////////
 
-    let check1 = kzg_verify_g1::<E>(
+    let check1 = KZGCommit::<E>::verify_g1(
         [vk.g1, vk.g1_x].as_ref(),
         &vk.powers_of_g2,
         &proof.g1_F,

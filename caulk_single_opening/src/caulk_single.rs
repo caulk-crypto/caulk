@@ -3,6 +3,12 @@ This file includes the Caulk prover and verifier for single openings.
 The protocol is described in Figure 1.
 */
 
+use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
+use crate::caulk_single_unity::{
+    caulk_single_unity_prove, caulk_single_unity_verify, CaulkProofUnity, PublicParametersUnity,
+    VerifierPublicParametersUnity,
+};
+use crate::pedersen::{PedersenCommit, PedersenProof};
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
@@ -11,21 +17,13 @@ use ark_std::rand::RngCore;
 use ark_std::UniformRand;
 use ark_std::{One, Zero};
 
-use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
-use crate::caulk_single_unity::{
-    caulk_single_unity_prove, caulk_single_unity_verify, CaulkProofUnity, PublicParametersUnity,
-    VerifierPublicParametersUnity,
-};
-use crate::pedersen::{prove_pedersen, verify_pedersen, ProofPed};
-// use crate::tools::hash_caulk_single;
-
 // Structure of opening proofs output by prove.
 #[allow(non_snake_case)]
 pub struct CaulkProof<E: PairingEngine> {
     pub g2_z: E::G2Affine,
     pub g1_T: E::G1Affine,
     pub g2_S: E::G2Affine,
-    pub pi_ped: ProofPed<E>,
+    pub pi_ped: PedersenProof<E::G1Affine>,
     pub pi_unity: CaulkProofUnity<E>,
 }
 
@@ -52,21 +50,24 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     let s = E::Fr::rand(rng);
 
     let domain_H: GeneralEvaluationDomain<E::Fr> =
-        GeneralEvaluationDomain::new(pp.domain_H_size).unwrap();
+        GeneralEvaluationDomain::new(pp.verifier_pp.domain_H_size).unwrap();
 
     ///////////////////////////////
     // Compute [z]_2, [T]_1, and [S]_2
     ///////////////////////////////
 
     // [z]_2 = [ a (x - omega^i) ]_2
-    let g2_z =
-        (pp.poly_vk.beta_h.mul(a) + pp.poly_vk.h.mul(-a * domain_H.element(index))).into_affine();
+    let g2_z = (pp.verifier_pp.poly_vk.beta_h.mul(a)
+        + pp.verifier_pp.poly_vk.h.mul(-a * domain_H.element(index)))
+    .into_affine();
 
     // [T]_1 = [ (  a^(-1) Q  + s h]_1 for Q precomputed KZG opening.
-    let g1_T = (g1_q.mul(a.inverse().unwrap()) + pp.pedersen_param.h.mul(s)).into_affine();
+    let g1_T =
+        (g1_q.mul(a.inverse().unwrap()) + pp.verifier_pp.pedersen_param.h.mul(s)).into_affine();
 
     // [S]_2 = [ - r - s z ]_2
-    let g2_S = (pp.poly_vk.h.mul((-*r).into_repr()) + g2_z.mul((-s).into_repr())).into_affine();
+    let g2_S = (pp.verifier_pp.poly_vk.h.mul((-*r).into_repr()) + g2_z.mul((-s).into_repr()))
+        .into_affine();
 
     ///////////////////////////////
     // Pedersen prove
@@ -81,7 +82,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     transcript.append_element(b"S", &g2_S);
 
     // proof that cm = g^z h^rs
-    let pi_ped = prove_pedersen::<E, R>(&pp.pedersen_param, transcript, cm, v, r, rng);
+    let pi_ped = PedersenCommit::prove(&pp.verifier_pp.pedersen_param, transcript, cm, v, r, rng);
 
     ///////////////////////////////
     // Unity prove
@@ -92,15 +93,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     transcript.append_element(b"t2", &pi_ped.t2);
 
     // Setting up the public parameters for the unity prover
-    let pp_unity = PublicParametersUnity {
-        poly_ck: pp.poly_ck.clone(),
-        gxd: pp.poly_ck_d,
-        gxpen: pp.poly_ck_pen,
-        lagrange_polynomials_Vn: pp.lagrange_polynomials_Vn.clone(),
-        poly_prod: pp.poly_prod.clone(),
-        logN: pp.logN,
-        domain_Vn: pp.domain_Vn,
-    };
+    let pp_unity = PublicParametersUnity::from(pp);
 
     // proof that A = [a x - b ]_2 for a^n = b^n
     let pi_unity = caulk_single_unity_prove(
@@ -162,7 +155,7 @@ pub fn caulk_single_verify<E: PairingEngine>(
     transcript.append_element(b"S", &proof.g2_S);
 
     // verify that cm = [v + r h]
-    let check2 = verify_pedersen::<E>(&vk.pedersen_param, transcript, cm, &proof.pi_ped);
+    let check2 = PedersenCommit::verify(&vk.pedersen_param, transcript, cm, &proof.pi_ped);
 
     ///////////////////////////////
     // Unity check

@@ -8,6 +8,12 @@ pub struct CaulkTranscript<F: PrimeField> {
     phantom: PhantomData<F>,
 }
 
+impl<F: PrimeField> Default for CaulkTranscript<F> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<F: PrimeField> CaulkTranscript<F> {
     pub fn new() -> Self {
         Self {
