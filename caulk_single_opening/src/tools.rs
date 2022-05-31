@@ -16,9 +16,9 @@ use ark_std::{One, Zero};
 use blake2s_simd::Params;
 use rand::{RngCore, SeedableRng};
 use rand_chacha::ChaChaRng;
-use std::{error::Error, io, str::FromStr};
 #[cfg(feature = "parallel")]
-use rayon::iter::{IntoParallelRefIterator,ParallelIterator};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use std::{error::Error, io, str::FromStr};
 
 // Function for reading inputs from the command line.
 pub fn read_line<T: FromStr>() -> T
@@ -119,7 +119,7 @@ fn kzg_open_g1_single<E: PairingEngine>(
 Algorithm described in Section 4.6.1, Multiple Openings
 */
 pub fn kzg_verify_g1<E: PairingEngine>(
-    //Verify that @c_com is a commitment to C(X) such that C(x)=z
+    // Verify that @c_com is a commitment to C(X) such that C(x)=z
     powers_of_g1: &[E::G1Affine], // generator of G1
     powers_of_g2: &[E::G2Affine], // [1]_2, [x]_2, [x^2]_2, ...
     c_com: &E::G1Affine,          //commitment
@@ -134,16 +134,18 @@ pub fn kzg_verify_g1<E: PairingEngine>(
     let mut lagrange_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
     let mut prod = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
     let mut components = vec![];
-    for  &p in points.iter() {
-            let poly = DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]);
-            prod = &prod * (&poly);
-            components.push(poly);
+    for &p in points.iter() {
+        let poly = DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]);
+        prod = &prod * (&poly);
+        components.push(poly);
     }
-   
+
     for i in 0..points.len() {
         let mut temp = &prod / &components[i];
         let lagrange_scalar = temp.evaluate(&points[i]).inverse().unwrap() * evals[i];
-        temp.coeffs.iter_mut().for_each(|x|*x = *x * lagrange_scalar);
+        temp.coeffs
+            .iter_mut()
+            .for_each(|x| *x = *x * lagrange_scalar);
         lagrange_tau = lagrange_tau + temp;
     }
 
@@ -158,11 +160,6 @@ pub fn kzg_verify_g1<E: PairingEngine>(
     );
 
     // vanishing polynomial
-    // z_tau[i] = polynomial equal to 0 at point[j]
-    // let mut z_tau = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
-    // for &p in points.iter() {
-    //     z_tau = &z_tau * (&DensePolynomial::from_coefficients_slice(&[-p, E::Fr::one()]));
-    // }
     let z_tau = prod;
 
     // commit to z_tau(X) in g2

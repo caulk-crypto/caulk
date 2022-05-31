@@ -53,12 +53,7 @@ pub fn verify_pedersen<E: PairingEngine>(
 ) -> bool {
     // compute c = Hash(cm, R)
 
-    let c = hash_caulk_single::<E>(
-        hash_input,
-        Some(&[*cm, proof.g1_r]),
-        None,
-        None,
-    );
+    let c = hash_caulk_single::<E>(hash_input, Some(&[*cm, proof.g1_r]), None, None);
     *hash_input = c;
 
     // check that R  g^(-t1) h^(-t2) cm^(c) = 1

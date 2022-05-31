@@ -86,12 +86,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     ///////////////////////////////
 
     // hash the last round of the pedersen proof to determine hash input to the unity prover
-    hash_input = hash_caulk_single::<E>(
-        &hash_input,
-        None,
-        None,
-        Some(&[pi_ped.t1, pi_ped.t2]),
-    );
+    hash_input = hash_caulk_single::<E>(&hash_input, None, None, Some(&[pi_ped.t1, pi_ped.t2]));
 
     // Setting up the public parameters for the unity prover
     let pp_unity = PublicParametersUnity {

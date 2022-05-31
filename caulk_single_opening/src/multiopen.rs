@@ -92,7 +92,7 @@ pub fn dft_g1<E: PairingEngine>(h: &[E::G1Projective], p: usize) -> Vec<E::G1Pro
         }
         l /= 2;
         m *= 2;
-        xvec= xt;
+        xvec = xt;
     }
     xvec
 }
@@ -189,10 +189,7 @@ pub fn idft_g1<E: PairingEngine>(h: &[E::G1Projective], p: usize) -> Vec<E::G1Pr
 
     let domain_inverse = dom_fr.inverse().unwrap().into_repr();
 
-    xvec
-        .iter()
-        .map(|x| x.mul(domain_inverse))
-        .collect()
+    xvec.iter().map(|x| x.mul(domain_inverse)).collect()
 }
 
 #[cfg(test)]

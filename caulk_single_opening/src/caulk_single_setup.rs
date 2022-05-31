@@ -12,9 +12,9 @@ use ark_poly::{
 use ark_poly_commit::kzg10::*;
 use ark_std::{cfg_into_iter, rand::RngCore, One, Zero};
 use ark_std::{end_timer, start_timer};
-use std::cmp::max;
 #[cfg(feature = "parallel")]
-use rayon::iter::{IntoParallelIterator,ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::cmp::max;
 
 // structure of public parameters
 #[allow(non_snake_case)]

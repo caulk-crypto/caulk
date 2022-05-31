@@ -14,7 +14,7 @@ use ark_poly_commit::kzg10::*;
 use ark_std::{cfg_into_iter, One, Zero};
 use ark_std::{rand::RngCore, UniformRand};
 #[cfg(feature = "parallel")]
-use rayon::iter::{IntoParallelIterator,ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 // prover public parameters structure for caulk_single_unity_prove
 #[allow(non_snake_case)]
@@ -121,10 +121,10 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     let mut shift_2 = E::Fr::one();
 
     for i in 0..f_poly.len() {
-        f_poly_shift_1[i]  *= shift_1;
-        f_poly_shift_2[i]  *= shift_2;
-        shift_1  *= pp.domain_Vn.element(pp.domain_Vn.size() - 1);
-        shift_2  *= pp.domain_Vn.element(pp.domain_Vn.size() - 2);
+        f_poly_shift_1[i] *= shift_1;
+        f_poly_shift_2[i] *= shift_2;
+        shift_1 *= pp.domain_Vn.element(pp.domain_Vn.size() - 1);
+        shift_2 *= pp.domain_Vn.element(pp.domain_Vn.size() - 2);
     }
 
     ////////////////////////////
