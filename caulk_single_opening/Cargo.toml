@@ -25,6 +25,7 @@ thiserror = "1.0.19"
 blake2s_simd = "1.0.0"
 
 rayon = { version = "1.5.2", default-features = false, optional = true }
+merlin = { version = "3.0.0" }
 
 [features]
 asm = [ "ark-ff/asm" ]

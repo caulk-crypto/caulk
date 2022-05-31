@@ -6,13 +6,28 @@ use ark_poly_commit::kzg10::KZG10;
 use ark_std::test_rng;
 use ark_std::UniformRand;
 use caulk_single_opening::caulk_single_setup;
+use caulk_single_opening::kzg_open_g1;
 use caulk_single_opening::multiple_open;
+use caulk_single_opening::CaulkTranscript;
 use caulk_single_opening::{caulk_single_prove, caulk_single_verify};
-use caulk_single_opening::{kzg_open_g1, read_line};
 use std::time::Instant;
+use std::{error::Error, io, str::FromStr};
 
 type UniPoly381 = DensePolynomial<Fr>;
 type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
+
+// Function for reading inputs from the command line.
+fn read_line<T: FromStr>() -> T
+where
+    <T as FromStr>::Err: Error + 'static,
+{
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .expect("Failed to get console input.");
+    let output: T = input.trim().parse().expect("Console input is invalid.");
+    output
+}
 
 #[allow(non_snake_case)]
 fn main() {
@@ -88,16 +103,39 @@ fn main() {
     // z = c(w_i) and cm = g^z h^r for random r
     let z = c_poly.evaluate(&omega_i);
     let r = Fr::rand(&mut rng);
-    let cm = (pp.ped_g.mul(z) + pp.ped_h.mul(r)).into_affine();
+    let cm = (pp.pedersen_param.g.mul(z) + pp.pedersen_param.h.mul(r)).into_affine();
+
+    let mut prover_transcript = CaulkTranscript::<Fr>::new();
+    let mut verifier_transcript = CaulkTranscript::<Fr>::new();
 
     // run the prover
     println!("We are now ready to run the prover.  How many times should we run it?");
     let number_of_openings: usize = read_line();
     let now = Instant::now();
 
-    let mut proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
+    let mut proof_evaluate = caulk_single_prove(
+        &pp,
+        &mut prover_transcript,
+        &g1_C,
+        &cm,
+        position,
+        &g1_q,
+        &z,
+        &r,
+        &mut rng,
+    );
     for _ in 1..(number_of_openings - 1) {
-        proof_evaluate = caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
+        proof_evaluate = caulk_single_prove(
+            &pp,
+            &mut prover_transcript,
+            &g1_C,
+            &cm,
+            position,
+            &g1_q,
+            &z,
+            &r,
+            &mut rng,
+        );
     }
     println!(
         "Time to evaluate {} single openings of table size {:?} = {:?}",
@@ -109,11 +147,23 @@ fn main() {
     // run the verifier
     println!(
         "The proof verifies = {:?}",
-        caulk_single_verify(&pp.verifier_pp, &g1_C, &cm, &proof_evaluate)
+        caulk_single_verify(
+            &pp.verifier_pp,
+            &mut verifier_transcript,
+            &g1_C,
+            &cm,
+            &proof_evaluate,
+        )
     );
     let now = Instant::now();
     for _ in 0..(number_of_openings - 1) {
-        caulk_single_verify(&pp.verifier_pp, &g1_C, &cm, &proof_evaluate);
+        caulk_single_verify(
+            &pp.verifier_pp,
+            &mut verifier_transcript,
+            &g1_C,
+            &cm,
+            &proof_evaluate,
+        );
     }
     println!(
         "Time to verify {} single openings of table size {:?} = {:?}",

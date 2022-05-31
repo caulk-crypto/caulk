@@ -3,7 +3,8 @@ This file includes the Caulk's unity prover and verifier for single openings.
 The protocol is described in Figure 2.
 */
 
-use crate::tools::{hash_caulk_single, kzg_open_g1, kzg_verify_g1};
+use crate::kzg::{kzg_open_g1, kzg_verify_g1};
+use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::Field;
 use ark_poly::{
@@ -57,7 +58,7 @@ pub struct CaulkProofUnity<E: PairingEngine> {
 #[allow(non_snake_case)]
 pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     pp: &PublicParametersUnity<E>,
-    hash_input: &mut E::Fr,
+    transcript: &mut CaulkTranscript<E::Fr>,
     g2_z: &E::G2Affine,
     a: &E::Fr,
     b: &E::Fr,
@@ -179,10 +180,10 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     ////////////////////////////
     // alpha = Hash([z]_2, [F]_1, [H]_1)
     ////////////////////////////
-
-    let alpha = hash_caulk_single::<E>(hash_input, Some(&[g1_F, g1_H]), Some(&[*g2_z]), None);
-
-    *hash_input = alpha;
+    transcript.append_element(b"F", &g1_F);
+    transcript.append_element(b"H", &g1_H);
+    transcript.append_element(b"z", g2_z);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     ////////////////////////////
     // v1 = f(sigma^(-1) alpha) and v2 = f(w^(-2) alpha)
@@ -277,7 +278,7 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
 #[allow(non_snake_case)]
 pub fn caulk_single_unity_verify<E: PairingEngine>(
     vk: &VerifierPublicParametersUnity<E>,
-    hash_input: &mut E::Fr,
+    transcript: &mut CaulkTranscript<E::Fr>,
     g2_z: &E::G2Affine,
     proof: &CaulkProofUnity<E>,
 ) -> bool {
@@ -292,14 +293,10 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     ////////////////////////////
     // alpha = Hash(A, F, H)
     ////////////////////////////
-
-    let alpha = hash_caulk_single::<E>(
-        hash_input,
-        Some(&[proof.g1_F, proof.g1_H]),
-        Some(&[*g2_z]),
-        None,
-    );
-    *hash_input = alpha;
+    transcript.append_element(b"F", &proof.g1_F);
+    transcript.append_element(b"H", &proof.g1_H);
+    transcript.append_element(b"z", g2_z);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     // alpha1 = sigma^(-1) alpha and alpha2 = sigma^(-2) alpha
     let alpha1: E::Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 1);

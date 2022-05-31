@@ -3,6 +3,7 @@ This file includes the setup algorithm for Caulk with single openings.
 A full description of the setup is not formally given in the paper.
 */
 
+use crate::PedersonParam;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, UniformRand};
 use ark_poly::{
@@ -25,8 +26,7 @@ pub struct PublicParameters<E: PairingEngine> {
     pub lagrange_polynomials_Vn: Vec<DensePolynomial<E::Fr>>,
     pub poly_prod: DensePolynomial<E::Fr>,
     pub poly_vk: VerifierKey<E>,
-    pub ped_g: E::G1Affine,
-    pub ped_h: E::G1Affine,
+    pub pedersen_param: PedersonParam<E::G1Affine>,
     pub domain_H_size: usize,
     pub logN: usize,
     pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
@@ -42,9 +42,8 @@ pub struct VerifierPublicParameters<E: PairingEngine> {
     pub lagrange_scalars_Vn: Vec<E::Fr>,
     pub poly_prod: DensePolynomial<E::Fr>,
     pub poly_vk: VerifierKey<E>,
-    pub ped_g: E::G1Affine,
+    pub pedersen_param: PedersonParam<E::G1Affine>,
     pub g1_x: E::G1Affine,
-    pub ped_h: E::G1Affine,
     pub domain_H_size: usize,
     pub logN: usize,
     pub domain_Vn: GeneralEvaluationDomain<E::Fr>,
@@ -209,9 +208,8 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
         lagrange_scalars_Vn,
         poly_prod: poly_prod.clone(),
         poly_vk: poly_vk.clone(),
-        ped_g,
+        pedersen_param: PedersonParam { g: ped_g, h: ped_h },
         g1_x: srs.powers_of_g[1],
-        ped_h,
         domain_H_size: domain_H.size(),
         logN,
         domain_Vn,
@@ -225,8 +223,7 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
         poly_ck_pen,
         lagrange_polynomials_Vn,
         poly_prod,
-        ped_g,
-        ped_h,
+        pedersen_param: PedersonParam { g: ped_g, h: ped_h },
         domain_H_size: domain_H.size(),
         logN,
         poly_vk,

@@ -3,6 +3,7 @@ This file includes the Caulk prover and verifier for single openings.
 The protocol is described in Figure 1.
 */
 
+use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
@@ -16,7 +17,7 @@ use crate::caulk_single_unity::{
     VerifierPublicParametersUnity,
 };
 use crate::pedersen::{prove_pedersen, verify_pedersen, ProofPed};
-use crate::tools::hash_caulk_single;
+// use crate::tools::hash_caulk_single;
 
 // Structure of opening proofs output by prove.
 #[allow(non_snake_case)]
@@ -37,6 +38,7 @@ pub struct CaulkProof<E: PairingEngine> {
 #[allow(clippy::too_many_arguments)]
 pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     pp: &PublicParameters<E>,
+    transcript: &mut CaulkTranscript<E::Fr>,
     g1_C: &E::G1Affine,
     cm: &E::G1Affine,
     index: usize,
@@ -61,7 +63,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
         (pp.poly_vk.beta_h.mul(a) + pp.poly_vk.h.mul(-a * domain_H.element(index))).into_affine();
 
     // [T]_1 = [ (  a^(-1) Q  + s h]_1 for Q precomputed KZG opening.
-    let g1_T = (g1_q.mul(a.inverse().unwrap()) + pp.ped_h.mul(s)).into_affine();
+    let g1_T = (g1_q.mul(a.inverse().unwrap()) + pp.pedersen_param.h.mul(s)).into_affine();
 
     // [S]_2 = [ - r - s z ]_2
     let g2_S = (pp.poly_vk.h.mul((-*r).into_repr()) + g2_z.mul((-s).into_repr())).into_affine();
@@ -71,22 +73,23 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     ///////////////////////////////
 
     // hash the instance and the proof elements to determine hash inputs for Pedersen prover
-    let mut hash_input = hash_caulk_single::<E>(
-        &E::Fr::zero(),
-        Some(&[*g1_C, g1_T]),
-        Some(&[g2_z, g2_S]),
-        None,
-    );
+
+    transcript.append_element(b"0", &E::Fr::zero());
+    transcript.append_element(b"C", g1_C);
+    transcript.append_element(b"T", &g1_T);
+    transcript.append_element(b"z", &g2_z);
+    transcript.append_element(b"S", &g2_S);
 
     // proof that cm = g^z h^rs
-    let pi_ped = prove_pedersen::<E, R>(&pp.ped_g, &pp.ped_h, &mut hash_input, cm, v, r, rng);
+    let pi_ped = prove_pedersen::<E, R>(&pp.pedersen_param, transcript, cm, v, r, rng);
 
     ///////////////////////////////
     // Unity prove
     ///////////////////////////////
 
     // hash the last round of the pedersen proof to determine hash input to the unity prover
-    hash_input = hash_caulk_single::<E>(&hash_input, None, None, Some(&[pi_ped.t1, pi_ped.t2]));
+    transcript.append_element(b"t1", &pi_ped.t1);
+    transcript.append_element(b"t2", &pi_ped.t2);
 
     // Setting up the public parameters for the unity prover
     let pp_unity = PublicParametersUnity {
@@ -102,7 +105,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     // proof that A = [a x - b ]_2 for a^n = b^n
     let pi_unity = caulk_single_unity_prove(
         &pp_unity,
-        &mut hash_input,
+        transcript,
         &g2_z,
         &a,
         &(a * domain_H.element(index)),
@@ -124,6 +127,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
 #[allow(non_snake_case)]
 pub fn caulk_single_verify<E: PairingEngine>(
     vk: &VerifierPublicParameters<E>,
+    transcript: &mut CaulkTranscript<E::Fr>,
     g1_C: &E::G1Affine,
     cm: &E::G1Affine,
     proof: &CaulkProof<E>,
@@ -141,7 +145,7 @@ pub fn caulk_single_verify<E: PairingEngine>(
             vk.poly_vk.prepared_h.clone(),
         ),
         ((proof.g1_T).into(), proof.g2_z.into()),
-        (vk.ped_h.into(), proof.g2_S.into()),
+        (vk.pedersen_param.h.into(), proof.g2_S.into()),
     ];
 
     let check1 = E::product_of_pairings(&eq1).is_one();
@@ -151,32 +155,27 @@ pub fn caulk_single_verify<E: PairingEngine>(
     ///////////////////////////////
 
     // hash the instance and the proof elements to determine hash inputs for Pedersen prover
-    let mut hash_input = hash_caulk_single::<E>(
-        &E::Fr::zero(),
-        Some(&[*g1_C, proof.g1_T]),
-        Some(&[proof.g2_z, proof.g2_S]),
-        None,
-    );
+    transcript.append_element(b"0", &E::Fr::zero());
+    transcript.append_element(b"C", g1_C);
+    transcript.append_element(b"T", &proof.g1_T);
+    transcript.append_element(b"z", &proof.g2_z);
+    transcript.append_element(b"S", &proof.g2_S);
 
     // verify that cm = [v + r h]
-    let check2 = verify_pedersen::<E>(&vk.ped_g, &vk.ped_h, &mut hash_input, cm, &proof.pi_ped);
+    let check2 = verify_pedersen::<E>(&vk.pedersen_param, transcript, cm, &proof.pi_ped);
 
     ///////////////////////////////
     // Unity check
     ///////////////////////////////
 
     // hash the last round of the pedersen proof to determine hash input to the unity prover
-    hash_input = hash_caulk_single::<E>(
-        &hash_input,
-        None,
-        None,
-        Some(&[proof.pi_ped.t1, proof.pi_ped.t2]),
-    );
+    transcript.append_element(b"t1", &proof.pi_ped.t1);
+    transcript.append_element(b"t2", &proof.pi_ped.t2);
 
     let vk_unity = VerifierPublicParametersUnity {
         poly_vk: vk.poly_vk.clone(),
         gxpen: vk.poly_ck_pen,
-        g1: vk.ped_g,
+        g1: vk.pedersen_param.g,
         g1_x: vk.g1_x,
         lagrange_scalars_Vn: vk.lagrange_scalars_Vn.clone(),
         poly_prod: vk.poly_prod.clone(),
@@ -186,8 +185,7 @@ pub fn caulk_single_verify<E: PairingEngine>(
     };
 
     // Verify that g2_z = [ ax - b ]_1 for (a/b)**N = 1
-    let check3 =
-        caulk_single_unity_verify(&vk_unity, &mut hash_input, &proof.g2_z, &proof.pi_unity);
+    let check3 = caulk_single_unity_verify(&vk_unity, transcript, &proof.g2_z, &proof.pi_unity);
 
     check1 && check2 && check3
 }

@@ -3,12 +3,17 @@ This file includes a prover and verifier for demonstrating knowledge of an openi
 The protocol is informally described in Appendix A.2, Proof of Opening of a Pedersen Commitment
 */
 
+use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::PrimeField;
 use ark_std::Zero;
 use ark_std::{rand::RngCore, UniformRand};
 
-use crate::tools::hash_caulk_single;
+// Parameters for perdersen commitment
+pub struct PedersonParam<C: AffineCurve> {
+    pub g: C,
+    pub h: C,
+}
 
 // Structure of proof output by prove_pedersen
 pub struct ProofPed<E: PairingEngine> {
@@ -19,9 +24,8 @@ pub struct ProofPed<E: PairingEngine> {
 
 // prove knowledge of a and b such that  cm = g^a h^b
 pub fn prove_pedersen<E: PairingEngine, R: RngCore>(
-    g1: &E::G1Affine,
-    h1: &E::G1Affine,
-    hash_input: &mut E::Fr,
+    param: &PedersonParam<E::G1Affine>,
+    transcript: &mut CaulkTranscript<E::Fr>,
     cm: &E::G1Affine,
     a: &E::Fr,
     b: &E::Fr,
@@ -31,11 +35,12 @@ pub fn prove_pedersen<E: PairingEngine, R: RngCore>(
     let s1 = E::Fr::rand(rng);
     let s2 = E::Fr::rand(rng);
 
-    let g1_r = (g1.mul(s1.into_repr()) + h1.mul(s2.into_repr())).into_affine();
+    let g1_r = (param.g.mul(s1) + param.h.mul(s2.into_repr())).into_affine();
 
     // c = Hash(cm, R)
-    let c = hash_caulk_single::<E>(hash_input, Some(&[*cm, g1_r]), None, None);
-    *hash_input = c;
+    transcript.append_element(b"commitment", cm);
+    transcript.append_element(b"commitment", &g1_r);
+    let c = transcript.get_and_append_challenge(b"get c");
 
     let t1 = s1 + c * a;
     let t2 = s2 + c * b;
@@ -45,19 +50,19 @@ pub fn prove_pedersen<E: PairingEngine, R: RngCore>(
 
 // Verify that prover knows a and b such that  cm = g^a h^b
 pub fn verify_pedersen<E: PairingEngine>(
-    g1: &E::G1Affine,
-    h1: &E::G1Affine,
-    hash_input: &mut E::Fr,
+    param: &PedersonParam<E::G1Affine>,
+    transcript: &mut CaulkTranscript<E::Fr>,
     cm: &E::G1Affine,
     proof: &ProofPed<E>,
 ) -> bool {
     // compute c = Hash(cm, R)
-
-    let c = hash_caulk_single::<E>(hash_input, Some(&[*cm, proof.g1_r]), None, None);
-    *hash_input = c;
+    transcript.append_element(b"commitment", cm);
+    transcript.append_element(b"commitment", &proof.g1_r);
+    let c = transcript.get_and_append_challenge(b"get c");
 
     // check that R  g^(-t1) h^(-t2) cm^(c) = 1
-    let check = proof.g1_r.into_projective() + g1.mul(-proof.t1) + h1.mul(-proof.t2) + cm.mul(c);
+    let check =
+        proof.g1_r.into_projective() + param.g.mul(-proof.t1) + param.h.mul(-proof.t2) + cm.mul(c);
 
     check.is_zero()
 }

@@ -1,14 +1,17 @@
 mod caulk_single;
 mod caulk_single_setup;
 mod caulk_single_unity;
+mod kzg;
 mod multiopen;
 mod pedersen;
-mod tools;
+mod transcript;
 
 pub use caulk_single::{caulk_single_prove, caulk_single_verify};
 pub use caulk_single_setup::caulk_single_setup;
+pub use kzg::kzg_open_g1;
 pub use multiopen::multiple_open;
-pub use tools::{kzg_open_g1, read_line};
+pub use pedersen::PedersonParam;
+pub use transcript::CaulkTranscript;
 
 #[cfg(test)]
 mod tests {
@@ -16,6 +19,7 @@ mod tests {
     use crate::caulk_single_setup;
     use crate::kzg_open_g1;
     use crate::multiple_open;
+    use crate::CaulkTranscript;
     use crate::{caulk_single_prove, caulk_single_verify};
     use ark_bls12_381::{Bls12_381, Fr};
     use ark_ec::{AffineCurve, ProjectiveCurve};
@@ -57,7 +61,10 @@ mod tests {
             // z = c(w_i) and cm = g^z h^r for random r
             let z = c_poly.evaluate(&omega_i);
             let r = Fr::rand(&mut rng);
-            let cm = (pp.ped_g.mul(z) + pp.ped_h.mul(r)).into_affine();
+            let cm = (pp.pedersen_param.g.mul(z) + pp.pedersen_param.h.mul(r)).into_affine();
+
+            let mut prover_transcript = CaulkTranscript::<Fr>::new();
+            let mut verifier_transcript = CaulkTranscript::<Fr>::new();
 
             // open single position at 0
             {
@@ -65,15 +72,25 @@ mod tests {
                 let g1_q = a.1;
 
                 // run the prover
-                let proof_evaluate =
-                    caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
+                let proof_evaluate = caulk_single_prove(
+                    &pp,
+                    &mut prover_transcript,
+                    &g1_C,
+                    &cm,
+                    position,
+                    &g1_q,
+                    &z,
+                    &r,
+                    &mut rng,
+                );
 
                 // run the verifier
                 assert!(caulk_single_verify(
                     &pp.verifier_pp,
+                    &mut verifier_transcript,
                     &g1_C,
                     &cm,
-                    &proof_evaluate
+                    &proof_evaluate,
                 ));
             }
             // compute all openings
@@ -82,14 +99,24 @@ mod tests {
                 let g1_q = g1_qs[position];
 
                 // run the prover
-                let proof_evaluate =
-                    caulk_single_prove(&pp, &g1_C, &cm, position, &g1_q, &z, &r, &mut rng);
+                let proof_evaluate = caulk_single_prove(
+                    &pp,
+                    &mut prover_transcript,
+                    &g1_C,
+                    &cm,
+                    position,
+                    &g1_q,
+                    &z,
+                    &r,
+                    &mut rng,
+                );
                 // run the verifier
                 assert!(caulk_single_verify(
                     &pp.verifier_pp,
+                    &mut verifier_transcript,
                     &g1_C,
                     &cm,
-                    &proof_evaluate
+                    &proof_evaluate,
                 ));
             }
         }

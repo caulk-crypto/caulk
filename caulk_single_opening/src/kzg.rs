@@ -11,27 +11,9 @@ use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{univariate::DensePolynomial, Polynomial, UVPolynomial};
 use ark_poly_commit::kzg10::*;
-use ark_serialize::CanonicalSerialize;
 use ark_std::{One, Zero};
-use blake2s_simd::Params;
-use rand::{RngCore, SeedableRng};
-use rand_chacha::ChaChaRng;
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use std::{error::Error, io, str::FromStr};
-
-// Function for reading inputs from the command line.
-pub fn read_line<T: FromStr>() -> T
-where
-    <T as FromStr>::Err: Error + 'static,
-{
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .expect("Failed to get console input.");
-    let output: T = input.trim().parse().expect("Console input is invalid.");
-    output
-}
 
 ////////////////////////////////////////////////
 //
@@ -193,67 +175,4 @@ pub fn kzg_verify_g1<E: PairingEngine>(
     ];
 
     E::product_of_pairings(pairing_inputs.iter()).is_one()
-}
-
-/////////////////////////////////////////////////////////////////////
-// Hashing
-/////////////////////////////////////////////////////////////////////
-
-// hashing to field copied from
-// https://github.com/kobigurk/aggregatable-dkg/blob/main/src/signature/utils/hash.rs
-fn rng_from_message(personalization: &[u8], message: &[u8]) -> ChaChaRng {
-    let hash = Params::new()
-        .hash_length(32)
-        .personal(personalization)
-        .to_state()
-        .update(message)
-        .finalize();
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(hash.as_bytes());
-    ChaChaRng::from_seed(seed)
-}
-
-// statistical uniform with bias < 2^-128 for field size < 384 bits
-fn hash_to_field<F: PrimeField>(personalization: &[u8], message: &[u8]) -> F {
-    let mut rng = rng_from_message(personalization, message);
-    let mut buf = [0u8; 64];
-    rng.fill_bytes(&mut buf);
-    F::from_le_bytes_mod_order(buf.as_ref())
-}
-
-/* hash function that takes as input:
-    (1) some state (either equal to the last hash output or zero)
-    (2) a vector of g1 elements
-    (3) a vector of g2 elements
-    (4) a vector of field elements
-
-It returns a field element.
-*/
-pub fn hash_caulk_single<E: PairingEngine>(
-    state: &E::Fr,
-    g1_elements: Option<&[E::G1Affine]>,
-    g2_elements: Option<&[E::G2Affine]>,
-    field_elements: Option<&[E::Fr]>,
-) -> E::Fr {
-    // PERSONALIZATION distinguishes this hash from other hashes that may be in the system
-    const PERSONALIZATION: &[u8] = b"CAULK1";
-
-    let mut hash_input = vec![];
-    state.serialize(&mut hash_input).ok();
-
-    match g1_elements {
-        None => (),
-        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
-    }
-    match g2_elements {
-        None => (),
-        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
-    }
-    match field_elements {
-        None => (),
-        Some(p) => p.iter().for_each(|x| x.serialize(&mut hash_input).unwrap()),
-    }
-
-    // hash_to_field
-    hash_to_field::<E::Fr>(PERSONALIZATION, &hash_input)
 }
