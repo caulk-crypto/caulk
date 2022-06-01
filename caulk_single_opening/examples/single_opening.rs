@@ -6,7 +6,6 @@ use ark_poly_commit::kzg10::KZG10;
 use ark_std::test_rng;
 use ark_std::UniformRand;
 use caulk_single_opening::caulk_single_setup;
-use caulk_single_opening::multiple_open;
 use caulk_single_opening::CaulkTranscript;
 use caulk_single_opening::KZGCommit;
 use caulk_single_opening::{caulk_single_prove, caulk_single_verify};
@@ -95,7 +94,7 @@ fn main() {
 
         //compute all openings
         let now = Instant::now();
-        let g1_qs = multiple_open(&c_poly, &pp.poly_ck, p);
+        let g1_qs = KZGCommit::multiple_open(&c_poly, &pp.poly_ck, p);
         g1_q = g1_qs[position];
         println!("Time to compute all KZG openings {:?}", now.elapsed());
     }

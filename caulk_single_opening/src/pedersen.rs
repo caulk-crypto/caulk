@@ -6,7 +6,6 @@ The protocol is informally described in Appendix A.2, Proof of Opening of a Pede
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::PrimeField;
-use ark_std::Zero;
 use ark_std::{rand::RngCore, UniformRand};
 use std::marker::PhantomData;
 
@@ -67,11 +66,6 @@ impl<C: AffineCurve> PedersenCommit<C> {
         let c = transcript.get_and_append_challenge(b"get c");
 
         // check that R  g^(-t1) h^(-t2) cm^(c) = 1
-        let check = proof.g1_r.into_projective()
-            + param.g.mul(-proof.t1)
-            + param.h.mul(-proof.t2)
-            + cm.mul(c);
-
-        check.is_zero()
+        proof.g1_r.into_projective() + cm.mul(c) == param.g.mul(proof.t1) + param.h.mul(proof.t2)
     }
 }

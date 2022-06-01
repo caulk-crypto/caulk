@@ -16,6 +16,7 @@ use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
 use ark_std::rand::RngCore;
 use ark_std::UniformRand;
 use ark_std::{One, Zero};
+use std::ops::Neg;
 
 // Structure of opening proofs output by prove.
 #[allow(non_snake_case)]
@@ -131,12 +132,7 @@ pub fn caulk_single_verify<E: PairingEngine>(
 
     // check that e( - C + cm, [1]_2) + e( [T]_1, [z]_2 ) + e( [h]_1, [S]_2 ) = 1
     let eq1: Vec<(E::G1Prepared, E::G2Prepared)> = vec![
-        (
-            (g1_C.mul(-E::Fr::one()) + cm.into_projective())
-                .into_affine()
-                .into(),
-            vk.poly_vk.prepared_h.clone(),
-        ),
+        ((g1_C.neg() + *cm).into(), vk.poly_vk.prepared_h.clone()),
         ((proof.g1_T).into(), proof.g2_z.into()),
         (vk.pedersen_param.h.into(), proof.g2_S.into()),
     ];
@@ -165,17 +161,7 @@ pub fn caulk_single_verify<E: PairingEngine>(
     transcript.append_element(b"t1", &proof.pi_ped.t1);
     transcript.append_element(b"t2", &proof.pi_ped.t2);
 
-    let vk_unity = VerifierPublicParametersUnity {
-        poly_vk: vk.poly_vk.clone(),
-        gxpen: vk.poly_ck_pen,
-        g1: vk.pedersen_param.g,
-        g1_x: vk.g1_x,
-        lagrange_scalars_Vn: vk.lagrange_scalars_Vn.clone(),
-        poly_prod: vk.poly_prod.clone(),
-        logN: vk.logN,
-        domain_Vn: vk.domain_Vn,
-        powers_of_g2: vk.powers_of_g2.clone(),
-    };
+    let vk_unity = VerifierPublicParametersUnity::from(vk);
 
     // Verify that g2_z = [ ax - b ]_1 for (a/b)**N = 1
     let check3 = caulk_single_unity_verify(&vk_unity, transcript, &proof.g2_z, &proof.pi_unity);

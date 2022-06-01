@@ -7,11 +7,13 @@ This file includes backend tools:
 (5) random_field is for generating random field elements
 */
 
+use crate::{compute_h, dft_g1};
 use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{univariate::DensePolynomial, Polynomial, UVPolynomial};
+use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
 use ark_poly_commit::kzg10::*;
-use ark_std::rand::RngCore;
+use ark_std::{end_timer, start_timer};
 use ark_std::{One, Zero};
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -36,12 +38,42 @@ pub struct KZGCommit<E: PairingEngine> {
 }
 
 impl<E: PairingEngine> KZGCommit<E> {
-    pub fn commit<R: RngCore>(
-        powers: &Powers<E>,
-        polynomial: &DensePolynomial<E::Fr>,
-    ) -> E::G1Affine {
+    pub fn commit(powers: &Powers<E>, polynomial: &DensePolynomial<E::Fr>) -> E::G1Affine {
         let (com, _randomness) = KZG10::<E, _>::commit(powers, polynomial, None, None).unwrap();
         com.0
+    }
+
+    // compute all openings to c_poly using a smart formula
+    // This Code implements an algorithm for calculating n openings of a KZG vector commitment of size n in n log(n) time.
+    // The algorithm is by Feist and Khovratovich.
+    // It is useful for preprocessing.
+    // The full algorithm is described here https://github.com/khovratovich/Kate/blob/master/Kate_amortized.pdf
+    pub fn multiple_open(
+        c_poly: &DensePolynomial<E::Fr>, //c(X)
+        poly_ck: &Powers<E>,             //SRS
+        p: usize,
+    ) -> Vec<E::G1Affine> {
+        let timer = start_timer!(|| "multiple open");
+
+        let degree = c_poly.coeffs.len() - 1;
+        let input_domain: GeneralEvaluationDomain<E::Fr> = EvaluationDomain::new(degree).unwrap();
+
+        let h_timer = start_timer!(|| "compute h");
+        let h2 = compute_h(c_poly, poly_ck, p);
+        end_timer!(h_timer);
+
+        let dom_size = input_domain.size();
+        assert_eq!(1 << p, dom_size);
+        assert_eq!(degree + 1, dom_size);
+
+        let dft_timer = start_timer!(|| "G1 dft");
+        let q2 = dft_g1::<E>(&h2, p);
+        end_timer!(dft_timer);
+
+        let res = E::G1Projective::batch_normalization_into_affine(q2.as_ref());
+
+        end_timer!(timer);
+        res
     }
 
     /*
@@ -63,7 +95,7 @@ impl<E: PairingEngine> KZGCommit<E> {
             proofs.push(pi);
         }
 
-        let mut res: E::G1Projective = E::G1Projective::zero(); //default value
+        let mut res = E::G1Projective::zero(); //default value
 
         for j in 0..points.len() {
             let w_j = points[j];

@@ -5,15 +5,14 @@ It is useful for preprocessing.
 The full algorithm is described here https://github.com/khovratovich/Kate/blob/master/Kate_amortized.pdf
 */
 
+use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::univariate::DensePolynomial;
+use ark_poly::{EvaluationDomain, GeneralEvaluationDomain, UVPolynomial};
+use ark_poly_commit::kzg10::*;
 use ark_std::One;
 use ark_std::Zero;
 use std::vec::Vec;
-
-use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_poly::{EvaluationDomain, GeneralEvaluationDomain, UVPolynomial};
-use ark_poly_commit::kzg10::*;
 
 //compute all pre-proofs using DFT
 // h_i= c_d[x^{d-i-1}]+c_{d-1}[x^{d-i-2}]+c_{d-2}[x^{d-i-3}]+\cdots + c_{i+2}[x]+c_{i+1}[1]
@@ -29,12 +28,14 @@ pub fn compute_h<E: PairingEngine>(
 
     //let now = Instant::now();
     //1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d+2 [0]'s]
-    let mut x_ext = vec![];
-    for i in 0..=dom_size - 2 {
-        x_ext.push(poly_ck.powers_of_g[dom_size - 2 - i].into_projective());
-    }
-    let g1inf = poly_ck.powers_of_g[0].mul(fpzero);
-    x_ext.resize(2 * dom_size, g1inf); //filling 2d+2 neutral elements
+    let mut x_ext: Vec<E::G1Projective> = poly_ck
+        .powers_of_g
+        .iter()
+        .take(dom_size - 1)
+        .rev()
+        .map(|x| x.into_projective())
+        .collect();
+    x_ext.resize(2 * dom_size, E::G1Projective::zero()); //filling 2d+2 neutral elements
 
     let y = dft_g1::<E>(&x_ext, p + 1);
     //println!("Step 1 computed in {:?}", now.elapsed());
@@ -125,39 +126,6 @@ pub fn dft_opt<E: PairingEngine>(h: &[E::Fr], p: usize) -> Vec<E::Fr> {
     xvec
 }
 
-//compute all openings to c_poly using a smart formula
-pub fn multiple_open<E: PairingEngine>(
-    c_poly: &DensePolynomial<E::Fr>, //c(X)
-    poly_ck: &Powers<E>,             //SRS
-    p: usize,
-) -> Vec<E::G1Affine> {
-    let degree = c_poly.coeffs.len() - 1;
-    let input_domain: GeneralEvaluationDomain<E::Fr> = EvaluationDomain::new(degree).unwrap();
-
-    //let now = Instant::now();
-    let h2 = compute_h(c_poly, poly_ck, p);
-    //println!("H2 computed in {:?}", now.elapsed());
-    //assert_eq!(h,h2);
-
-    let dom_size = input_domain.size();
-    assert_eq!(1 << p, dom_size);
-    assert_eq!(degree + 1, dom_size);
-    /*let now = Instant::now();
-    let q = DFTG1(&h,p);
-    println!("Q computed in {:?}", now.elapsed());*/
-
-    //let now = Instant::now();
-    let q2 = dft_g1::<E>(&h2, p);
-    //println!("Q2 computed in {:?}", now.elapsed());
-    //assert_eq!(q,q2);
-
-    let mut res: Vec<E::G1Affine> = vec![];
-    for e in q2.iter() {
-        res.push(e.into_affine());
-    }
-    res
-}
-
 //compute idft of size @dom_size over vector of G1 elements
 //q_i = (h_0 + h_1w^-i + h_2w^{-2i}+\cdots + h_{dom_size-1}w^{-(dom_size-1)i})/dom_size for 0<= i< dom_size=2^p
 pub fn idft_g1<E: PairingEngine>(h: &[E::G1Projective], p: usize) -> Vec<E::G1Projective> {
@@ -194,8 +162,9 @@ pub fn idft_g1<E: PairingEngine>(h: &[E::G1Projective], p: usize) -> Vec<E::G1Pr
 
 #[cfg(test)]
 pub mod tests {
+    use super::*;
     use crate::caulk_single_setup::caulk_single_setup;
-    use crate::multiopen::*;
+    use crate::KZGCommit;
     use ark_bls12_377::Bls12_377;
     use ark_bls12_381::Bls12_381;
     use ark_ec::PairingEngine;
@@ -395,7 +364,7 @@ pub mod tests {
         println!("Multi naive computed in {:?}", now.elapsed());
 
         let now = Instant::now();
-        let q2 = multiple_open(&c_poly, &pp.poly_ck, p);
+        let q2 = KZGCommit::multiple_open(&c_poly, &pp.poly_ck, p);
         println!("Multi advanced computed in {:?}", now.elapsed());
         assert_eq!(q, q2);
     }

@@ -3,7 +3,7 @@ This file includes the Caulk's unity prover and verifier for single openings.
 The protocol is described in Figure 2.
 */
 
-use crate::caulk_single_setup::PublicParameters;
+use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
 use crate::kzg::KZGCommit;
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
@@ -65,6 +65,22 @@ impl<E: PairingEngine> From<&PublicParameters<E>> for PublicParametersUnity<E> {
             poly_prod: pp.verifier_pp.poly_prod.clone(),
             logN: pp.verifier_pp.logN,
             domain_Vn: pp.verifier_pp.domain_Vn,
+        }
+    }
+}
+
+impl<E: PairingEngine> From<&VerifierPublicParameters<E>> for VerifierPublicParametersUnity<E> {
+    fn from(vk: &VerifierPublicParameters<E>) -> Self {
+        Self {
+            poly_vk: vk.poly_vk.clone(),
+            gxpen: vk.poly_ck_pen,
+            g1: vk.pedersen_param.g,
+            g1_x: vk.g1_x,
+            lagrange_scalars_Vn: vk.lagrange_scalars_Vn.clone(),
+            poly_prod: vk.poly_prod.clone(),
+            logN: vk.logN,
+            domain_Vn: vk.domain_Vn,
+            powers_of_g2: vk.powers_of_g2.clone(),
         }
     }
 }
@@ -185,12 +201,11 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     ////////////////////////////
     // Commit to f(X) and h(X)
     ////////////////////////////
-    let (g1_F, _) = KZG10::commit(&pp.poly_ck, &f_poly, None, None).unwrap();
-    let g1_F: E::G1Affine = g1_F.0;
-    let (h_hat_com, _) = KZG10::commit(&pp.poly_ck, &h_hat_poly, None, None).unwrap();
+    let g1_F = KZGCommit::<E>::commit(&pp.poly_ck, &f_poly);
+    let h_hat_com = KZGCommit::<E>::commit(&pp.poly_ck, &h_hat_poly);
 
     // g1_H is a commitment to h_hat_poly + X^(d-1) z(X)
-    let g1_H = h_hat_com.0 + (pp.gxd.mul(-*a) + pp.gxpen.mul(*b)).into_affine();
+    let g1_H = (h_hat_com.into_projective() + pp.gxd.mul(-*a) + pp.gxpen.mul(*b)).into_affine();
 
     ////////////////////////////
     // alpha = Hash([z]_2, [F]_1, [H]_1)
@@ -392,7 +407,7 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
         ),
         (
             ((vk.g1.mul(-rho0 - rho1) + vk.gxpen.mul(-zalpha)).into_affine()).into(),
-            g2_z.into_projective().into_affine().into(),
+            (*g2_z).into(),
         ),
         ((-g1_q).into(), vk.poly_vk.prepared_beta_h.clone()),
     ];

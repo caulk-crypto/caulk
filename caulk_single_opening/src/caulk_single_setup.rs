@@ -50,10 +50,10 @@ fn trim<E: PairingEngine, P: UVPolynomial<E::Fr>>(
     if supported_degree == 1 {
         supported_degree += 1;
     }
-    let pp = srs.clone();
-    let powers_of_g = pp.powers_of_g[..=supported_degree].to_vec();
+
+    let powers_of_g = srs.powers_of_g[..=supported_degree].to_vec();
     let powers_of_gamma_g = (0..=supported_degree)
-        .map(|i| pp.powers_of_gamma_g[&i])
+        .map(|i| srs.powers_of_gamma_g[&i])
         .collect();
 
     let powers = Powers {
@@ -61,12 +61,12 @@ fn trim<E: PairingEngine, P: UVPolynomial<E::Fr>>(
         powers_of_gamma_g: ark_std::borrow::Cow::Owned(powers_of_gamma_g),
     };
     let vk = VerifierKey {
-        g: pp.powers_of_g[0],
-        gamma_g: pp.powers_of_gamma_g[&0],
-        h: pp.h,
-        beta_h: pp.beta_h,
-        prepared_h: pp.prepared_h.clone(),
-        prepared_beta_h: pp.prepared_beta_h.clone(),
+        g: srs.powers_of_g[0],
+        gamma_g: srs.powers_of_gamma_g[&0],
+        h: srs.h,
+        beta_h: srs.beta_h,
+        prepared_h: srs.prepared_h.clone(),
+        prepared_beta_h: srs.prepared_beta_h.clone(),
     };
     (powers, vk)
 }
