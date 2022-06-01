@@ -1,9 +1,7 @@
-/*
-This file includes the setup algorithm for Caulk with single openings.
-A full description of the setup is not formally given in the paper.
-*/
+// This file includes the setup algorithm for Caulk with single openings.
+// A full description of the setup is not formally given in the paper.
 
-use crate::PedersenParam;
+use crate::{util::trim, PedersenParam};
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, UniformRand};
 use ark_poly::{
@@ -11,8 +9,7 @@ use ark_poly::{
     GeneralEvaluationDomain, UVPolynomial,
 };
 use ark_poly_commit::kzg10::*;
-use ark_std::{cfg_into_iter, rand::RngCore, One, Zero};
-use ark_std::{end_timer, start_timer};
+use ark_std::{cfg_into_iter, end_timer, rand::RngCore, start_timer, One, Zero};
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::cmp::max;
@@ -41,36 +38,6 @@ pub struct VerifierPublicParameters<E: PairingEngine> {
     pub powers_of_g2: Vec<E::G2Affine>,
 }
 
-// Reduces full srs down to smaller srs for smaller polynomials
-// Copied from arkworks library (where same function is private)
-fn trim<E: PairingEngine, P: UVPolynomial<E::Fr>>(
-    srs: &UniversalParams<E>,
-    mut supported_degree: usize,
-) -> (Powers<'static, E>, VerifierKey<E>) {
-    if supported_degree == 1 {
-        supported_degree += 1;
-    }
-
-    let powers_of_g = srs.powers_of_g[..=supported_degree].to_vec();
-    let powers_of_gamma_g = (0..=supported_degree)
-        .map(|i| srs.powers_of_gamma_g[&i])
-        .collect();
-
-    let powers = Powers {
-        powers_of_g: ark_std::borrow::Cow::Owned(powers_of_g),
-        powers_of_gamma_g: ark_std::borrow::Cow::Owned(powers_of_gamma_g),
-    };
-    let vk = VerifierKey {
-        g: srs.powers_of_g[0],
-        gamma_g: srs.powers_of_gamma_g[&0],
-        h: srs.h,
-        beta_h: srs.beta_h,
-        prepared_h: srs.prepared_h.clone(),
-        prepared_beta_h: srs.prepared_beta_h.clone(),
-    };
-    (powers, vk)
-}
-
 // setup algorithm for Caulk with single openings
 // also includes a bunch of precomputation.
 #[allow(non_snake_case)]
@@ -96,7 +63,8 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
     // We take the larger of the two.
     let poly_ck_size = max(actual_degree, 2 * domain_Vn.size() + 3);
 
-    // Setup algorithm. To be replaced by output of a universal setup before being production ready.
+    // Setup algorithm. To be replaced by output of a universal setup before being
+    // production ready.
     let powers_time = start_timer!(|| "setup powers");
     let srs = KZG10::<E, DensePolynomial<E::Fr>>::setup(max(max_degree, poly_ck_size), true, rng)
         .unwrap();
@@ -115,7 +83,8 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
     let ped_h: E::G1Affine = E::G1Projective::rand(rng).into_affine();
 
     // precomputation to speed up prover
-    // lagrange_polynomials_Vn[i] = polynomial equal to 0 at w^j for j!= i and 1  at w^i
+    // lagrange_polynomials_Vn[i] = polynomial equal to 0 at w^j for j!= i and 1  at
+    // w^i
     let mut lagrange_polynomials_Vn: Vec<DensePolynomial<E::Fr>> = Vec::new();
 
     // precomputation to speed up verifier.
@@ -149,9 +118,9 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
     }
     lagrange_scalars_Vn.push(temp.inverse().unwrap());
 
-    // poly_prod = (X - 1) (X - w) (X - w^2) (X - w^3) (X - w^4) (X - w^(5 + logN)) (X - w^(6 + logN))
-    // for efficiency not including (X - w^i) for i  > 6 + logN
-    // prover sets these evaluations to 0 anyway.
+    // poly_prod = (X - 1) (X - w) (X - w^2) (X - w^3) (X - w^4) (X - w^(5 + logN))
+    // (X - w^(6 + logN)) for efficiency not including (X - w^i) for i  > 6 +
+    // logN prover sets these evaluations to 0 anyway.
     let mut poly_prod = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
     for i in 0..domain_Vn.size() {
         if i < 5 {
@@ -181,8 +150,8 @@ pub fn caulk_single_setup<E: PairingEngine, R: RngCore>(
     let ped_g = poly_ck.powers_of_g[0];
 
     // need some powers of g2
-    // arkworks setup doesn't give these powers but the setup does use a fixed randomness to generate them.
-    // so we can generate powers of g2 directly.
+    // arkworks setup doesn't give these powers but the setup does use a fixed
+    // randomness to generate them. so we can generate powers of g2 directly.
     let rng = &mut ark_std::test_rng();
     let beta = E::Fr::rand(rng);
     let mut temp = poly_vk.h;

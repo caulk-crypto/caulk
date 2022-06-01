@@ -1,22 +1,23 @@
-/*
-This file includes the Caulk prover and verifier for single openings.
-The protocol is described in Figure 1.
-*/
+// This file includes the Caulk prover and verifier for single openings.
+// The protocol is described in Figure 1.
 
-use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
-use crate::caulk_single_unity::{
-    caulk_single_unity_prove, caulk_single_unity_verify, CaulkProofUnity, PublicParametersUnity,
-    VerifierPublicParametersUnity,
+pub mod setup;
+pub mod unity;
+
+use crate::{
+    pedersen::{PedersenCommit, PedersenProof},
+    CaulkTranscript,
 };
-use crate::pedersen::{PedersenCommit, PedersenProof};
-use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{EvaluationDomain, GeneralEvaluationDomain};
-use ark_std::rand::RngCore;
-use ark_std::UniformRand;
-use ark_std::{One, Zero};
+use ark_std::{rand::RngCore, One, UniformRand, Zero};
+use setup::{PublicParameters, VerifierPublicParameters};
 use std::ops::Neg;
+use unity::{
+    caulk_single_unity_prove, caulk_single_unity_verify, CaulkProofUnity, PublicParametersUnity,
+    VerifierPublicParametersUnity,
+};
 
 // Structure of opening proofs output by prove.
 #[allow(non_snake_case)]
@@ -28,11 +29,12 @@ pub struct CaulkProof<E: PairingEngine> {
     pub pi_unity: CaulkProofUnity<E>,
 }
 
-//Proves knowledge of (i, Q, z, r) such that
+// Proves knowledge of (i, Q, z, r) such that
 // 1) Q is a KZG opening proof that  g1_C opens to z at i
 // 2) cm = g^z h^r
 
-//Takes as input opening proof Q. Does not need knowledge of contents of C  = g1_C.
+// Takes as input opening proof Q. Does not need knowledge of contents of C  =
+// g1_C.
 #[allow(non_snake_case)]
 #[allow(clippy::too_many_arguments)]
 pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
@@ -74,7 +76,8 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     // Pedersen prove
     ///////////////////////////////
 
-    // hash the instance and the proof elements to determine hash inputs for Pedersen prover
+    // hash the instance and the proof elements to determine hash inputs for
+    // Pedersen prover
 
     transcript.append_element(b"0", &E::Fr::zero());
     transcript.append_element(b"C", g1_C);
@@ -89,7 +92,8 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     // Unity prove
     ///////////////////////////////
 
-    // hash the last round of the pedersen proof to determine hash input to the unity prover
+    // hash the last round of the pedersen proof to determine hash input to the
+    // unity prover
     transcript.append_element(b"t1", &pi_ped.t1);
     transcript.append_element(b"t2", &pi_ped.t2);
 
@@ -115,7 +119,7 @@ pub fn caulk_single_prove<E: PairingEngine, R: RngCore>(
     }
 }
 
-//Verifies that the prover knows of (i, Q, z, r) such that
+// Verifies that the prover knows of (i, Q, z, r) such that
 // 1) Q is a KZG opening proof that  g1_C opens to z at i
 // 2) cm = g^z h^r
 #[allow(non_snake_case)]
@@ -143,7 +147,8 @@ pub fn caulk_single_verify<E: PairingEngine>(
     // Pedersen check
     ///////////////////////////////
 
-    // hash the instance and the proof elements to determine hash inputs for Pedersen prover
+    // hash the instance and the proof elements to determine hash inputs for
+    // Pedersen prover
     transcript.append_element(b"0", &E::Fr::zero());
     transcript.append_element(b"C", g1_C);
     transcript.append_element(b"T", &proof.g1_T);
@@ -157,7 +162,8 @@ pub fn caulk_single_verify<E: PairingEngine>(
     // Unity check
     ///////////////////////////////
 
-    // hash the last round of the pedersen proof to determine hash input to the unity prover
+    // hash the last round of the pedersen proof to determine hash input to the
+    // unity prover
     transcript.append_element(b"t1", &proof.pi_ped.t1);
     transcript.append_element(b"t2", &proof.pi_ped.t2);
 

@@ -1,71 +1,67 @@
-/*
-This file includes the Caulk prover and verifier for single openings.
-The protocol is described in Figure 3.
-*/
+// This file includes the Caulk prover and verifier for single openings.
+// The protocol is described in Figure 3.
 
-use ark_bls12_381::{Bls12_381, Fr, FrParameters, G1Affine, G2Affine};
-use ark_ff::{Field, Fp256};
-use ark_poly::{univariate::DensePolynomial, Evaluations as EvaluationsOnDomain};
+pub mod setup;
+mod unity;
 
+use crate::{kzg::generate_lagrange_polynomials_subset, CaulkTranscript, KZGCommit};
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_poly::{EvaluationDomain, Evaluations, GeneralEvaluationDomain, Polynomial, UVPolynomial};
-use ark_serialize::CanonicalSerialize;
-
-use ark_std::{cfg_into_iter, One, Zero};
-
-use std::time::Instant;
-use std::vec::Vec;
-
-use crate::caulk_multi_setup::{setup_multi_lookup, PublicParameters};
-use crate::caulk_multi_unity::{prove_multiunity, verify_multiunity, ProofMultiUnity};
-use crate::tools::{
-    aggregate_kzg_proofs_g2, generate_lagrange_polynomials_subset, hash_caulk_multi, kzg_commit_g2,
-    kzg_open_g1_native, kzg_verify_g1_native, random_field, KzgBls12_381, UniPoly381,
+use ark_ff::{Field, PrimeField};
+use ark_poly::{
+    univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain, Evaluations,
+    GeneralEvaluationDomain, Polynomial, UVPolynomial,
 };
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::{cfg_into_iter, rand::RngCore, One, UniformRand, Zero};
+pub use setup::PublicParameters;
+use std::{
+    convert::TryInto,
+    fs::File,
+    io::{Read, Write},
+    time::Instant,
+    vec::Vec,
+};
+use unity::{prove_multiunity, verify_multiunity, ProofMultiUnity};
 
-use crate::multiopen::multiple_open_g2;
-
-pub struct LookupInstance {
-    pub c_com: G1Affine,   //polynomial C(X) that represents a table
-    pub phi_com: G1Affine, //polynomial phi(X) that represents the values to look up
+pub struct LookupInstance<C: AffineCurve> {
+    pub c_com: C,   // polynomial C(X) that represents a table
+    pub phi_com: C, // polynomial phi(X) that represents the values to look up
 }
 
-pub struct LookupProverInput {
-    pub c_poly: DensePolynomial<Fp256<FrParameters>>, //polynomial C(X) that represents a table
-    pub phi_poly: DensePolynomial<Fp256<FrParameters>>, //polynomial phi(X) that represents the values to look up
-    pub positions: Vec<usize>,                          //
-    pub openings: Vec<G2Affine>,
+pub struct LookupProverInput<E: PairingEngine> {
+    pub c_poly: DensePolynomial<E::Fr>, // polynomial C(X) that represents a table
+    pub phi_poly: DensePolynomial<E::Fr>, // polynomial phi(X) that represents the values to look up
+    pub positions: Vec<usize>,          //
+    pub openings: Vec<E::G2Affine>,
 }
 
 #[derive(Debug, PartialEq)]
-//Data structure to be stored in a file: polynomial, its commitment, and its openings (for certain SRS)
-pub struct TableInput {
-    pub c_poly: DensePolynomial<Fp256<FrParameters>>,
-    pub c_com: G1Affine,
-    pub openings: Vec<G2Affine>,
+// Data structure to be stored in a file: polynomial, its commitment, and its
+// openings (for certain SRS)
+pub struct TableInput<E: PairingEngine> {
+    pub c_poly: DensePolynomial<E::Fr>,
+    pub c_com: E::G1Affine,
+    pub openings: Vec<E::G2Affine>,
 }
 
-//Lookup proof data structure
+// Lookup proof data structure
 #[allow(non_snake_case)]
-pub struct LookupProof {
-    pub C_I_com: G1Affine, //Commitment to C_I(X)
-    pub H1_com: G2Affine,  //Commmitment to H_1(X)
-    pub H2_com: G1Affine,  //Commmitment to H_2(X)
-    pub u_com: G1Affine,   //Commmitment to u(X)
-    pub z_I_com: G1Affine, //Commitment to z_I(X)
-    pub v1: Fr,
-    pub v2: Fr,
-    pub pi1: G1Affine,
-    pub pi2: G1Affine,
-    pub pi3: G1Affine,
+pub struct LookupProof<E: PairingEngine> {
+    pub C_I_com: E::G1Affine, // Commitment to C_I(X)
+    pub H1_com: E::G2Affine,  // Commitment to H_1(X)
+    pub H2_com: E::G1Affine,  // Commitment to H_2(X)
+    pub u_com: E::G1Affine,   // Commitment to u(X)
+    pub z_I_com: E::G1Affine, // Commitment to z_I(X)
+    pub v1: E::Fr,
+    pub v2: E::Fr,
+    pub pi1: E::G1Affine,
+    pub pi2: E::G1Affine,
+    pub pi3: E::G1Affine,
 }
 
-impl TableInput {
+impl<E: PairingEngine> TableInput<E> {
     fn store(&self, path: &str) {
-        use std::fs::File;
-        use std::io::Write;
-
-        //1. Polynomial
+        // 1. Polynomial
         let mut o_bytes = vec![];
         let mut f = File::create(path).expect("Unable to create file");
         let len: u32 = self.c_poly.len().try_into().unwrap();
@@ -79,12 +75,12 @@ impl TableInput {
         }
         f.write_all(&o_bytes).expect("Unable to write data");
 
-        //2. Commitment
+        // 2. Commitment
         o_bytes.clear();
         self.c_com.serialize_uncompressed(&mut o_bytes).ok();
         f.write_all(&o_bytes).expect("Unable to write data");
 
-        //3. Openings
+        // 3. Openings
         o_bytes.clear();
         let len: u32 = self.openings.len().try_into().unwrap();
         let len_bytes = len.to_be_bytes();
@@ -96,10 +92,7 @@ impl TableInput {
         f.write_all(&o_bytes).expect("Unable to write data");
     }
 
-    fn load(path: &str) -> TableInput {
-        use ark_serialize::CanonicalDeserialize;
-        use std::fs::File;
-        use std::io::Read;
+    fn load(path: &str) -> TableInput<E> {
         const FR_UNCOMPR_SIZE: usize = 32;
         const G1_UNCOMPR_SIZE: usize = 96;
         const G2_UNCOMPR_SIZE: usize = 192;
@@ -107,7 +100,7 @@ impl TableInput {
         let mut f = File::open(path).expect("Unable to open file");
         f.read_to_end(&mut data).expect("Unable to read data");
 
-        //1. reading  c_poly
+        // 1. reading  c_poly
         let mut cur_counter: usize = 0;
         let len_bytes: [u8; 4] = (&data[0..4]).try_into().unwrap();
         let len: u32 = u32::from_be_bytes(len_bytes);
@@ -117,17 +110,17 @@ impl TableInput {
         for i in 0..len32 {
             let buf_bytes =
                 &data[cur_counter + i * FR_UNCOMPR_SIZE..cur_counter + (i + 1) * FR_UNCOMPR_SIZE];
-            let tmp = Fr::deserialize_unchecked(buf_bytes).unwrap();
+            let tmp = E::Fr::deserialize_unchecked(buf_bytes).unwrap();
             coeffs.push(tmp);
         }
         cur_counter += len32 * FR_UNCOMPR_SIZE;
 
-        //2. c_com
+        // 2. c_com
         let buf_bytes = &data[cur_counter..cur_counter + G1_UNCOMPR_SIZE];
-        let c_com = G1Affine::deserialize_unchecked(buf_bytes).unwrap();
+        let c_com = E::G1Affine::deserialize_unchecked(buf_bytes).unwrap();
         cur_counter += G1_UNCOMPR_SIZE;
 
-        //3 openings
+        // 3 openings
         let len_bytes: [u8; 4] = (&data[cur_counter..cur_counter + 4]).try_into().unwrap();
         let len: u32 = u32::from_be_bytes(len_bytes);
         let mut openings = vec![];
@@ -135,42 +128,43 @@ impl TableInput {
         cur_counter += 4;
         for _ in 0..len32 {
             let buf_bytes = &data[cur_counter..cur_counter + G2_UNCOMPR_SIZE];
-            let tmp = G2Affine::deserialize_unchecked(buf_bytes).unwrap();
+            let tmp = E::G2Affine::deserialize_unchecked(buf_bytes).unwrap();
             openings.push(tmp);
             cur_counter += G2_UNCOMPR_SIZE;
         }
 
         return TableInput {
             c_poly: DensePolynomial { coeffs },
-            c_com: c_com,
-            openings: openings,
+            c_com,
+            openings,
         };
     }
 }
 
 #[allow(non_snake_case)]
-pub fn compute_lookup_proof(
-    instance: &LookupInstance,
-    input: &LookupProverInput,
-    srs: &PublicParameters,
-) -> (LookupProof, ProofMultiUnity) {
+pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
+    instance: &LookupInstance<E::G1Affine>,
+    input: &LookupProverInput<E>,
+    srs: &PublicParameters<E>,
+    rng: &mut R,
+) -> (LookupProof<E>, ProofMultiUnity<E>) {
     let m = input.positions.len();
 
     ///////////////////////////////////////////////////////////////////
-    //1. Blinders
+    // 1. Blinders
     ///////////////////////////////////////////////////////////////////
 
     // provers blinders for zero-knowledge
-    let r1: Fp256<FrParameters> = random_field::<Fr>();
-    let r2: Fp256<FrParameters> = random_field::<Fr>();
-    let r3: Fp256<FrParameters> = random_field::<Fr>();
-    let r4: Fp256<FrParameters> = random_field::<Fr>();
-    let r5: Fp256<FrParameters> = random_field::<Fr>();
-    let r6: Fp256<FrParameters> = random_field::<Fr>();
-    let r7: Fp256<FrParameters> = random_field::<Fr>();
+    let r1 = E::Fr::rand(rng);
+    let r2 = E::Fr::rand(rng);
+    let r3 = E::Fr::rand(rng);
+    let r4 = E::Fr::rand(rng);
+    let r5 = E::Fr::rand(rng);
+    let r6 = E::Fr::rand(rng);
+    let r7 = E::Fr::rand(rng);
 
     ///////////////////////////////////////////////////////////////////
-    //2. Compute z_I(X) = r1 prod_{i in I} (X - w^i)
+    // 2. Compute z_I(X) = r1 prod_{i in I} (X - w^i)
     ///////////////////////////////////////////////////////////////////
 
     // z_I includes each position only once.
@@ -194,29 +188,30 @@ pub fn compute_lookup_proof(
         z_I = &z_I
             * &DensePolynomial::from_coefficients_slice(&[
                 -srs.domain_N.element(positions_no_repeats[j]),
-                Fr::one(),
+                E::Fr::one(),
             ]);
     }
 
     ///////////////////////////////////////////////////////////////////
-    //2. Compute C_I(X) = (r_2+r_3X + r4X^2)*Z_I(X) + sum_j c_j*tau_j(X)
+    // 2. Compute C_I(X) = (r_2+r_3X + r4X^2)*Z_I(X) + sum_j c_j*tau_j(X)
     ///////////////////////////////////////////////////////////////////
 
-    let mut c_I_poly = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+    let mut c_I_poly = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
     // tau_polys[i] = 1 at positions_no_repeats[i] and 0 at positions_no_repeats[j]
-    // Takes m^2 time, or 36ms when m = 32.  Can be done in m log^2(m) time if this ever becomes a bottleneck.
-    // See https://people.csail.mit.edu/devadas/pubs/scalable_thresh.pdf
+    // Takes m^2 time, or 36ms when m = 32.  Can be done in m log^2(m) time if this
+    // ever becomes a bottleneck. See https://people.csail.mit.edu/devadas/pubs/scalable_thresh.pdf
     let tau_polys = generate_lagrange_polynomials_subset(&positions_no_repeats, srs);
 
     // C_I(X) =  sum_j c_j*tau_j(X)
-    // Takes m^2 time, or 38ms when m = 32.  Can be done faster if we store c_poly evaluations.
+    // Takes m^2 time, or 38ms when m = 32.  Can be done faster if we store c_poly
+    // evaluations.
     for j in 0..positions_no_repeats.len() {
         c_I_poly = &c_I_poly
             + &(&tau_polys[j]
                 * input
                     .c_poly
-                    .evaluate(&srs.domain_N.element(positions_no_repeats[j]))); //sum_j c_j*tau_j
+                    .evaluate(&srs.domain_N.element(positions_no_repeats[j]))); // sum_j c_j*tau_j
     }
 
     // extra_blinder = r2 + r3 X + r4 X^2
@@ -226,21 +221,23 @@ pub fn compute_lookup_proof(
     c_I_poly = &c_I_poly + &(&z_I * &extra_blinder);
 
     ///////////////////////////////////////////////////////////////////
-    //4. Compute H1
+    // 4. Compute H1
     ///////////////////////////////////////////////////////////////////
 
     // Compute [Q(x)]_2 by aggregating kzg proofs such that
-    // Q(X) = (  C(X) - sum_{i in I} c_{i+1} tau_i(X)  ) /  ( prod_{i in I} (X - w^i) )
-    let g2_Q = aggregate_kzg_proofs_g2(&input.openings, &positions_no_repeats, &srs.domain_N);
+    // Q(X) = (  C(X) - sum_{i in I} c_{i+1} tau_i(X)  ) /  ( prod_{i in I} (X -
+    // w^i) )
+    let g2_Q =
+        KZGCommit::<E>::aggregate_proof_g2(&input.openings, &positions_no_repeats, &srs.domain_N);
 
     // blind_com = [ r2 + r3 x + r4 x^2 ]_2
-    let blind_com = kzg_commit_g2(&extra_blinder, srs);
+    let blind_com = KZGCommit::<E>::commit_g2(&srs.g2_powers, &extra_blinder);
 
     // H1_com = [ r1^{-1} Q(x) ]_2 - blind_com
     let H1_com = (g2_Q.mul(r1.inverse().unwrap()) - blind_com.into_projective()).into_affine();
 
     ///////////////////////////////////////////////////////////////////
-    //5. Compute u(X) = sum_j w^{i_j} mu_j(X) + (r5 + r6 X + r7 X^2) z_{Vm}(X)
+    // 5. Compute u(X) = sum_j w^{i_j} mu_j(X) + (r5 + r6 X + r7 X^2) z_{Vm}(X)
     ///////////////////////////////////////////////////////////////////
 
     // u(X) = sum_j w^{i_j} mu_j(X)
@@ -256,81 +253,76 @@ pub fn compute_lookup_proof(
         + &(extra_blinder2.mul_by_vanishing_poly(srs.domain_m));
 
     ///////////////////////////////////////////////////////////////////
-    //6. Commitments
+    // 6. Commitments
     ///////////////////////////////////////////////////////////////////
-    let (z_I_com, _) = KzgBls12_381::commit(&srs.poly_ck, &z_I, None, None).unwrap();
-    let (C_I_com, _) = KzgBls12_381::commit(&srs.poly_ck, &c_I_poly, None, None).unwrap();
-    let (u_com, _) = KzgBls12_381::commit(&srs.poly_ck, &u_poly, None, None).unwrap();
+    let z_I_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &z_I);
+    let C_I_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &c_I_poly);
+    let u_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &u_poly);
 
     ///////////////////////////////////////////////////////////////////
-    //7 Prepare unity proof
+    // 7 Prepare unity proof
     ///////////////////////////////////////////////////////////////////
 
-    // hash_input initialised to zero
-    let mut hash_input = Fr::zero();
+    // transcript initialised to zero
+    let mut transcript = CaulkTranscript::new();
 
-    //let now = Instant::now();
+    // let now = Instant::now();
     let unity_proof = prove_multiunity(
         &srs,
-        &mut hash_input,
-        &u_com.0,
+        &mut transcript,
+        &u_com,
         u_vals.clone(),
         extra_blinder2,
     );
-    //println!("Time to prove unity  {:?}",  now.elapsed());
+    // println!("Time to prove unity  {:?}",  now.elapsed());
 
     // quick test can be uncommented to check if unity proof verifies
-    // let unity_check = verify_multiunity( &srs, &mut Fr::zero(), u_com.0.clone(), &unity_proof );
-    // println!("unity_check = {}", unity_check);
+    // let unity_check = verify_multiunity( &srs, &mut Fr::zero(), u_com.0.clone(),
+    // &unity_proof ); println!("unity_check = {}", unity_check);
 
     ///////////////////////////////////////////////////////////////////
-    //8. Hash outputs to get chi
+    // 8. Hash outputs to get chi
     ///////////////////////////////////////////////////////////////////
 
-    let chi = hash_caulk_multi::<Fr>(
-        hash_input,
-        Some(
-            &[
-                &instance.c_com,
-                &instance.phi_com,
-                // hash last round of unity proof for good practice
-                &unity_proof.g1_u_bar_alpha,
-                &unity_proof.g1_h_2_alpha,
-                &unity_proof.pi_1,
-                &unity_proof.pi_2,
-                &unity_proof.pi_3,
-                &unity_proof.pi_4,
-                &unity_proof.pi_5,
-                // lookup inputs
-                &C_I_com.0,
-                &z_I_com.0,
-                &u_com.0,
-            ]
-            .to_vec(),
-        ),
-        Some(&[&H1_com.clone()].to_vec()),
-        Some(&[&unity_proof.v1, &unity_proof.v2, &unity_proof.v3].to_vec()),
-    );
+    transcript.append_element(b"c_com", &instance.c_com);
+    transcript.append_element(b"phi_com", &instance.phi_com);
+    transcript.append_element(b"u_bar_alpha", &unity_proof.g1_u_bar_alpha);
+    transcript.append_element(b"h2_alpha", &unity_proof.g1_h_2_alpha);
+    transcript.append_element(b"pi_1", &unity_proof.pi_1);
+    transcript.append_element(b"pi_2", &unity_proof.pi_2);
+    transcript.append_element(b"pi_3", &unity_proof.pi_3);
+    transcript.append_element(b"pi_4", &unity_proof.pi_4);
+    transcript.append_element(b"pi_5", &unity_proof.pi_5);
+    transcript.append_element(b"C_I_com", &C_I_com);
+    transcript.append_element(b"z_I_com", &z_I_com);
+    transcript.append_element(b"u_com", &u_com);
 
-    hash_input = chi.clone();
+    transcript.append_element(b"h1_com", &H1_com);
+
+    transcript.append_element(b"v1", &unity_proof.v1);
+    transcript.append_element(b"v2", &unity_proof.v2);
+    transcript.append_element(b"v3", &unity_proof.v3);
+
+    let chi = transcript.get_and_append_challenge(b"chi");
 
     ///////////////////////////////////////////////////////////////////
-    //9. Compute z_I( u(X) )
+    // 9. Compute z_I( u(X) )
     ///////////////////////////////////////////////////////////////////
 
     // Need a bigger domain to compute z_I(u(X)) over.
     // Has size O(m^2)
-    let domain_m_sq: GeneralEvaluationDomain<Fr> =
+    let domain_m_sq: GeneralEvaluationDomain<E::Fr> =
         GeneralEvaluationDomain::new(z_I.len() * u_poly.len() + 2).unwrap();
 
     // id_poly(X) = 0 for sigma_i < m and 1 for sigma_i > m
     // used for when m is not a power of 2
-    let mut id_poly = DensePolynomial::from_coefficients_slice(&[Fr::one()]);
+    let mut id_poly = DensePolynomial::from_coefficients_slice(&[E::Fr::one()]);
     id_poly = &id_poly - &srs.id_poly;
 
     // Compute z_I( u(X) + w^0 id(X) )
-    // Computing z_I(u(X)) is done naively and could be faster.  Currently this is not a bottleneck
-    let evals: Vec<Fp256<FrParameters>> = cfg_into_iter!(0..domain_m_sq.size())
+    // Computing z_I(u(X)) is done naively and could be faster.  Currently this is
+    // not a bottleneck
+    let evals: Vec<E::Fr> = cfg_into_iter!(0..domain_m_sq.size())
         .map(|k| {
             z_I.evaluate(
                 &(u_poly.evaluate(&domain_m_sq.element(k))
@@ -341,14 +333,15 @@ pub fn compute_lookup_proof(
     let z_I_u_poly = Evaluations::from_vec_and_domain(evals, domain_m_sq).interpolate();
 
     ///////////////////////////////////////////////////////////////////
-    //10. Compute C_I(u(X))-phi(X)
+    // 10. Compute C_I(u(X))-phi(X)
     ///////////////////////////////////////////////////////////////////
 
     // Compute C_I( u(X) )
-    // Computing C_I(u(X)) is done naively and could be faster.  Currently this is not a bottleneck
+    // Computing C_I(u(X)) is done naively and could be faster.  Currently this is
+    // not a bottleneck
 
-    //Actually compute c_I( u(X) + id(X) ) in case m is not a power of 2
-    let evals: Vec<Fp256<FrParameters>> = cfg_into_iter!(0..domain_m_sq.size())
+    // Actually compute c_I( u(X) + id(X) ) in case m is not a power of 2
+    let evals: Vec<E::Fr> = cfg_into_iter!(0..domain_m_sq.size())
         .map(|k| {
             c_I_poly.evaluate(
                 &(u_poly.evaluate(&domain_m_sq.element(k))
@@ -362,42 +355,43 @@ pub fn compute_lookup_proof(
         &Evaluations::from_vec_and_domain(evals, domain_m_sq).interpolate() - &input.phi_poly;
 
     ///////////////////////////////////////////////////////////////////
-    //11. Compute H2
+    // 11. Compute H2
     ///////////////////////////////////////////////////////////////////
 
     // temp_poly(X) = z_I(u(X)) + chi [ C_I(u(X)) - phi(X) ]
     let temp_poly = &z_I_u_poly + &(&c_I_u_poly * chi);
 
-    //H2(X) = temp_poly / z_Vm(X)
+    // H2(X) = temp_poly / z_Vm(X)
     let (H2_poly, rem) = temp_poly.divide_by_vanishing_poly(srs.domain_m).unwrap();
     assert!(
-        rem == DensePolynomial::from_coefficients_slice(&[Fr::zero()]),
+        rem == DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]),
         "H_2(X) doesn't divide"
     );
 
     ///////////////////////////////////////////////////////////////////
-    //12. Compute commitments to H2
+    // 12. Compute commitments to H2
     ///////////////////////////////////////////////////////////////////
-    //let now = Instant::now();
-    let (H2_com, _) = KzgBls12_381::commit(&srs.poly_ck, &H2_poly, None, None).unwrap();
-    //println!("Time to commit to H2  {:?}",  now.elapsed());
+    // let now = Instant::now();
+    let H2_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &H2_poly);
+    // println!("Time to commit to H2  {:?}",  now.elapsed());
 
     ///////////////////////////////////////////////////////////////////
-    //13. Hash outputs to get alpha
+    // 13. Hash outputs to get alpha
     ///////////////////////////////////////////////////////////////////
-    let alpha = hash_caulk_multi::<Fr>(hash_input, Some(&[&H2_com.0.clone()].to_vec()), None, None);
+    transcript.append_element(b"h2", &H2_com);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     // last hash so don't need to update hash_input
     // hash_input = alpha.clone();
 
     ///////////////////////////////////////////////////////////////////
-    //14. Open u at alpha, get v1
+    // 14. Open u at alpha, get v1
     ///////////////////////////////////////////////////////////////////
-    let (evals1, pi1) = kzg_open_g1_native(&srs.poly_ck, &u_poly, None, [&alpha].to_vec());
+    let (evals1, pi1) = KZGCommit::<E>::open_g1_batch(&srs.poly_ck, &u_poly, None, &[alpha]);
     let v1 = evals1[0];
 
     ///////////////////////////////////////////////////////////////////
-    //15. Compute p1(X) and open  at v1
+    // 15. Compute p1(X) and open  at v1
     ///////////////////////////////////////////////////////////////////
 
     // v1_id = u(alpha) + id(alpha) for when m is not a power of 2
@@ -406,10 +400,10 @@ pub fn compute_lookup_proof(
     // p1(X) = z_IX() + chi cI(X)
     let p1_poly = &z_I + &(&c_I_poly * chi);
 
-    let (evals2, pi2) = kzg_open_g1_native(&srs.poly_ck, &p1_poly, None, [&v1_id].to_vec());
+    let (evals2, pi2) = KZGCommit::<E>::open_g1_batch(&srs.poly_ck, &p1_poly, None, &[v1_id]);
 
     ///////////////////////////////////////////////////////////////////
-    //16. Compute p2(X) and open p2 at alpha
+    // 16. Compute p2(X) and open p2 at alpha
     ///////////////////////////////////////////////////////////////////
 
     // p2(X) = zI(u(alpha)) + chi C_I( u(alpha) )
@@ -421,135 +415,132 @@ pub fn compute_lookup_proof(
     p2_poly = &p2_poly - &(&input.phi_poly * chi);
 
     // p2(X) = p2(X) - zVm(alpha) H2(X)
-    let zVm: UniPoly381 = srs.domain_m.vanishing_polynomial().into();
+    let zVm: DensePolynomial<E::Fr> = srs.domain_m.vanishing_polynomial().into();
 
     p2_poly = &p2_poly - &(&H2_poly * zVm.evaluate(&alpha));
 
     // Open p2(X) at alpha
-    let (evals3, pi3) = kzg_open_g1_native(&srs.poly_ck, &p2_poly, None, [&alpha].to_vec());
+    let (evals3, pi3) = KZGCommit::<E>::open_g1_batch(&srs.poly_ck, &p2_poly, None, &[alpha]);
 
     // check that p2_poly(alpha) = 0
-    assert!(evals3[0] == Fr::zero(), "p2(alpha) does not equal 0");
+    assert!(evals3[0] == E::Fr::zero(), "p2(alpha) does not equal 0");
 
     ///////////////////////////////////////////////////////////////////
-    //17. Compose proof
+    // 17. Compose proof
     ///////////////////////////////////////////////////////////////////
     let proof = LookupProof {
-        C_I_com: C_I_com.0,
-        H1_com: H1_com,
-        H2_com: H2_com.0,
-        z_I_com: z_I_com.0,
-        u_com: u_com.0,
-        v1: v1,
+        C_I_com,
+        H1_com,
+        H2_com,
+        z_I_com,
+        u_com,
+        v1,
         v2: evals2[0],
-        pi1: pi1,
-        pi2: pi2,
-        pi3: pi3,
+        pi1,
+        pi2,
+        pi3,
     };
 
-    return (proof, unity_proof);
+    (proof, unity_proof)
 }
 
 #[allow(non_snake_case)]
-pub fn verify_lookup_proof(
-    c_com: G1Affine,
-    phi_com: G1Affine,
-    proof: &LookupProof,
-    unity_proof: &ProofMultiUnity,
-    srs: &PublicParameters,
+pub fn verify_lookup_proof<E: PairingEngine>(
+    c_com: &E::G1Affine,
+    phi_com: &E::G1Affine,
+    proof: &LookupProof<E>,
+    unity_proof: &ProofMultiUnity<E>,
+    srs: &PublicParameters<E>,
 ) -> bool {
     ///////////////////////////////////////////////////////////////////
-    //1. check unity
+    // 1. check unity
     ///////////////////////////////////////////////////////////////////
 
     // hash_input initialised to zero
-    let mut hash_input = Fr::zero();
+    let mut transcript = CaulkTranscript::new();
 
-    let unity_check = verify_multiunity(srs, &mut hash_input, proof.u_com, unity_proof);
+    let unity_check = verify_multiunity(srs, &mut transcript, &proof.u_com, unity_proof);
     assert!(unity_check, "failure on unity");
 
     ///////////////////////////////////////////////////////////////////
-    //2. Hash outputs to get chi
+    // 2. Hash outputs to get chi
     ///////////////////////////////////////////////////////////////////
 
-    let chi = hash_caulk_multi::<Fr>(
-        hash_input.clone(),
-        Some(
-            &[
-                &c_com,
-                &phi_com,
-                // include last round of unity proof outputs for good practice
-                &unity_proof.g1_u_bar_alpha,
-                &unity_proof.g1_h_2_alpha,
-                &unity_proof.pi_1,
-                &unity_proof.pi_2,
-                &unity_proof.pi_3,
-                &unity_proof.pi_4,
-                &unity_proof.pi_5,
-                // outputs from multi-lookup
-                &proof.C_I_com,
-                &proof.z_I_com,
-                &proof.u_com,
-            ]
-            .to_vec(),
-        ),
-        Some(&[&proof.H1_com].to_vec()),
-        Some(&[&unity_proof.v1, &unity_proof.v2, &unity_proof.v3].to_vec()),
-    );
+    transcript.append_element(b"c_com", c_com);
+    transcript.append_element(b"phi_com", phi_com);
+    transcript.append_element(b"u_bar_alpha", &unity_proof.g1_u_bar_alpha);
+    transcript.append_element(b"h2_alpha", &unity_proof.g1_h_2_alpha);
+    transcript.append_element(b"pi_1", &unity_proof.pi_1);
+    transcript.append_element(b"pi_2", &unity_proof.pi_2);
+    transcript.append_element(b"pi_3", &unity_proof.pi_3);
+    transcript.append_element(b"pi_4", &unity_proof.pi_4);
+    transcript.append_element(b"pi_5", &unity_proof.pi_5);
+    transcript.append_element(b"C_I_com", &proof.C_I_com);
+    transcript.append_element(b"z_I_com", &proof.z_I_com);
+    transcript.append_element(b"u_com", &proof.u_com);
 
-    hash_input = chi.clone();
+    transcript.append_element(b"h1_com", &proof.H1_com);
+
+    transcript.append_element(b"v1", &unity_proof.v1);
+    transcript.append_element(b"v2", &unity_proof.v2);
+    transcript.append_element(b"v3", &unity_proof.v3);
+
+    let chi = transcript.get_and_append_challenge(b"chi");
 
     ///////////////////////////////////////////////////////////////////
-    //3. Hash outputs to get alpha
+    // 3. Hash outputs to get alpha
     ///////////////////////////////////////////////////////////////////
-    let alpha = hash_caulk_multi::<Fr>(hash_input, Some(&[&proof.H2_com].to_vec()), None, None);
+    transcript.append_element(b"h2", &proof.H2_com);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     // last hash so don't need to update hash_input
     // hash_input = alpha.clone();
 
     ///////////////////////////////////////////////////////////////////
-    //4. Check pi_1
+    // 4. Check pi_1
     ///////////////////////////////////////////////////////////////////
 
     // KZG.Verify(srs_KZG, [u]_1, deg = bot, alpha, v1, pi1)
-    let check1 = kzg_verify_g1_native(
-        &srs,
-        proof.u_com.clone(),
+    let check1 = KZGCommit::<E>::verify_g1(
+        &srs.poly_ck.powers_of_g,
+        &srs.g2_powers,
+        &proof.u_com,
         None,
-        [alpha].to_vec(),
-        [proof.v1].to_vec(),
-        proof.pi1,
+        &[alpha],
+        &[proof.v1],
+        &proof.pi1,
     );
 
     assert!(check1, "failure on pi_1 check");
 
     ///////////////////////////////////////////////////////////////////
-    //5. Check pi_2
+    // 5. Check pi_2
     ///////////////////////////////////////////////////////////////////
 
     // v1_id = u(alpha)+ id(alpha) for when m is not a power of 2
-    let v1_id = proof.v1 + (Fr::one() - srs.id_poly.evaluate(&alpha));
+    let v1_id = proof.v1 + (E::Fr::one() - srs.id_poly.evaluate(&alpha));
 
     // [P1]_1 = [z_I]_1 + chi [c_I]_1
     let p1_com = (proof.z_I_com.into_projective() + proof.C_I_com.mul(chi)).into_affine();
 
     // KZG.Verify(srs_KZG, [P1]_1, deg = bot, v1_id, v2, pi2)
-    let check2 = kzg_verify_g1_native(
-        &srs,
-        p1_com,
+    let check2 = KZGCommit::<E>::verify_g1(
+        &srs.poly_ck.powers_of_g,
+        &srs.g2_powers,
+        &p1_com,
         None,
-        [v1_id].to_vec(),
-        [proof.v2].to_vec(),
-        proof.pi2,
+        &[v1_id],
+        &[proof.v2],
+        &proof.pi2,
     );
     assert!(check2, "failure on pi_2 check");
 
     ///////////////////////////////////////////////////////////////////
-    //6. Check pi_3
+    // 6. Check pi_3
     ///////////////////////////////////////////////////////////////////
 
     // z_Vm(X)
-    let zVm: UniPoly381 = srs.domain_m.vanishing_polynomial().into(); //z_V_m(alpah)
+    let zVm: DensePolynomial<E::Fr> = srs.domain_m.vanishing_polynomial().into(); // z_V_m(alpah)
 
     // [P2]_1 = [v2]_1 - chi cm - zVm(alpha) [H_2]_1
     let p2_com = (
@@ -561,28 +552,29 @@ pub fn verify_lookup_proof(
     .into_affine();
 
     // KZG.Verify(srs_KZG, [P2]_1, deg = bot, alpha, 0, pi3)
-    let check3 = kzg_verify_g1_native(
-        &srs,
-        p2_com,
+    let check3 = KZGCommit::<E>::verify_g1(
+        &srs.poly_ck.powers_of_g,
+        &srs.g2_powers,
+        &p2_com,
         None,
-        [alpha].to_vec(),
-        [Fr::zero()].to_vec(),
-        proof.pi3,
+        &[alpha],
+        &[E::Fr::zero()],
+        &proof.pi3,
     );
     assert!(check3, "failure on check 3");
 
     ///////////////////////////////////////////////////////////////////
-    //7. Check final pairing
+    // 7. Check final pairing
     ///////////////////////////////////////////////////////////////////
 
     // pairing1 = e([C]_1 - [C_I]_1, [1]_2)
-    let pairing1 = Bls12_381::pairing(
+    let pairing1 = E::pairing(
         (c_com.into_projective() - proof.C_I_com.into_projective()).into_affine(),
         srs.g2_powers[0],
     );
 
     // pairing2 = e([z_I]_1, [H_1]_2)
-    let pairing2 = Bls12_381::pairing(proof.z_I_com, proof.H1_com);
+    let pairing2 = E::pairing(proof.z_I_com, proof.H1_com);
 
     assert!(pairing1 == pairing2, "failure on pairing check");
 
@@ -591,38 +583,39 @@ pub fn verify_lookup_proof(
 
 #[allow(non_snake_case)]
 #[allow(dead_code)]
-pub fn generate_lookup_input() -> (
-    LookupProverInput,
-    PublicParameters, //SRS
+pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
+    rng: &mut R,
+) -> (
+    LookupProverInput<E>,
+    PublicParameters<E>, // SRS
 ) {
-    let n: usize = 8; //bitlength of poly degree
+    let n: usize = 8; // bitlength of poly degree
     let m: usize = 4;
-    //let m: usize = (1<<(n/2-1)); //should be power of 2
+    // let m: usize = (1<<(n/2-1)); //should be power of 2
     let N: usize = 1 << n;
     let max_degree: usize = if N > 2 * m * m { N - 1 } else { 2 * m * m };
     let actual_degree = N - 1;
     let now = Instant::now();
-    let pp = setup_multi_lookup(&max_degree, &N, &m, &n);
+    let pp = PublicParameters::<E>::setup(&max_degree, &N, &m, &n);
     println!("Time to setup {:?}", now.elapsed());
 
-    let rng = &mut ark_std::test_rng();
-    let c_poly = UniPoly381::rand(actual_degree, rng);
+    let c_poly = DensePolynomial::<E::Fr>::rand(actual_degree, rng);
 
     let mut positions: Vec<usize> = vec![];
     for j in 0..m {
-        //generate positions evenly distributed in the set
+        // generate positions evenly distributed in the set
         let i_j: usize = j * (N / m);
         positions.push(i_j);
     }
 
-    //generating phi
-    let blinder: Fp256<FrParameters> = random_field::<Fr>();
+    // generating phi
+    let blinder = E::Fr::rand(rng);
     let a_m = DensePolynomial::from_coefficients_slice(&[blinder]);
     let mut phi_poly = a_m.mul_by_vanishing_poly(pp.domain_m);
     for j in 0..m {
         phi_poly = &phi_poly
             + &(&pp.lagrange_polynomials_m[j]
-                * c_poly.evaluate(&pp.domain_N.element(positions[j]))); //adding c(w^{i_j})*mu_j(X)
+                * c_poly.evaluate(&pp.domain_N.element(positions[j]))); // adding c(w^{i_j})*mu_j(X)
     }
 
     for j in m..pp.domain_m.size() {
@@ -631,69 +624,32 @@ pub fn generate_lookup_input() -> (
     }
 
     let now = Instant::now();
-    let openings = multiple_open_g2(&pp.g2_powers, &c_poly, n);
+    let openings = KZGCommit::<E>::multiple_open::<E::G2Affine>(&c_poly, &pp.g2_powers, n);
     println!("Time to generate openings {:?}", now.elapsed());
 
     return (
         LookupProverInput {
-            c_poly: c_poly,
-            phi_poly: phi_poly,
-            positions: positions,
-            openings: openings,
+            c_poly,
+            phi_poly,
+            positions,
+            openings,
         },
         pp,
     );
 }
 
-#[allow(non_snake_case)]
-#[test]
-pub fn test_lookup() {
-    _do_lookup();
-}
-
-#[allow(non_snake_case)]
-#[test]
-pub fn test_store() {
-    //1. Setup
-    let n: usize = 6;
-    let N: usize = 1 << n;
-    let powers_size: usize = N + 2; //SRS SIZE
-    let temp_m = n; //dummy
-    let pp = setup_multi_lookup(&powers_size, &N, &temp_m, &n);
-    let actual_degree = N - 1;
-    let path = format!("tmp/poly_openings.log");
-
-    //2. Store
-    let rng = &mut ark_std::test_rng();
-    let c_poly = UniPoly381::rand(actual_degree, rng);
-    let (c_comx, _) = KzgBls12_381::commit(&pp.poly_ck, &c_poly, None, None).unwrap();
-    let openings = multiple_open_g2(&pp.g2_powers, &c_poly, pp.n);
-    let table = TableInput {
-        c_poly: c_poly,
-        c_com: c_comx.0,
-        openings: openings,
-    };
-    table.store(&path);
-
-    //3. Load
-    let table_loaded = TableInput::load(&path);
-
-    //4. Test
-    assert_eq!(table, table_loaded);
-    std::fs::remove_file(&path).expect("File can not be deleted");
-}
-
-#[allow(non_snake_case)]
-#[test]
-pub fn test_multiple_lookups() {
-    do_multiple_lookups()
-}
-
-pub fn get_poly_and_g2_openings(pp: &PublicParameters, actual_degree: usize) -> TableInput {
-    use std::fs::File;
-
-    //try opening the file. If it exists load the setup from there, otherwise generate
-    let path = format!("polys/poly_{}_openings_{}.setup", actual_degree, pp.N);
+pub fn get_poly_and_g2_openings<E: PairingEngine>(
+    pp: &PublicParameters<E>,
+    actual_degree: usize,
+) -> TableInput<E> {
+    // try opening the file. If it exists load the setup from there, otherwise
+    // generate
+    let path = format!(
+        "polys/poly_{}_openings_{}_{}.setup",
+        actual_degree,
+        pp.N,
+        E::Fq::size_in_bits()
+    );
     let res = File::open(path.clone());
     match res {
         Ok(_) => {
@@ -701,29 +657,81 @@ pub fn get_poly_and_g2_openings(pp: &PublicParameters, actual_degree: usize) -> 
             let table = TableInput::load(&path);
             println!("Time to load openings = {:?}", now.elapsed());
             return table;
-        }
+        },
         Err(_) => {
             let rng = &mut ark_std::test_rng();
-            let c_poly = UniPoly381::rand(actual_degree, rng);
-            let (c_comx, _) = KzgBls12_381::commit(&pp.poly_ck, &c_poly, None, None).unwrap();
+            let c_poly = DensePolynomial::<E::Fr>::rand(actual_degree, rng);
+            let c_comx = KZGCommit::<E>::commit_g1(&pp.poly_ck, &c_poly);
             let now = Instant::now();
-            let openings = multiple_open_g2(&pp.g2_powers, &c_poly, pp.n);
+            let openings =
+                KZGCommit::<E>::multiple_open::<E::G2Affine>(&c_poly, &pp.g2_powers, pp.n);
             println!("Time to generate openings = {:?}", now.elapsed());
             let table = TableInput {
-                c_poly: c_poly,
-                c_com: c_comx.0,
-                openings: openings,
+                c_poly,
+                c_com: c_comx,
+                openings,
             };
             table.store(&path);
             return table;
-        }
+        },
     }
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
+    use super::*;
+    use ark_bls12_377::Bls12_377;
+    use ark_bls12_381::Bls12_381;
+    use ark_ff::PrimeField;
+
+    #[test]
+    fn test_store() {
+        test_store_helper::<Bls12_381>();
+        test_store_helper::<Bls12_377>();
+    }
+
     #[allow(non_snake_case)]
-    pub fn do_multiple_lookups() {
+    pub fn test_store_helper<E: PairingEngine>() {
+        // 1. Setup
+        let n: usize = 6;
+        let N: usize = 1 << n;
+        let powers_size: usize = N + 2; // SRS SIZE
+        let temp_m = n; // dummy
+        let pp = PublicParameters::<E>::setup(&powers_size, &N, &temp_m, &n);
+        let actual_degree = N - 1;
+        let path = format!("tmp/poly_openings_{}.log", E::Fq::size_in_bits());
+
+        // 2. Store
+        let rng = &mut ark_std::test_rng();
+        let c_poly = DensePolynomial::<E::Fr>::rand(actual_degree, rng);
+        let c_com = KZGCommit::<E>::commit_g1(&pp.poly_ck, &c_poly);
+        let openings = KZGCommit::<E>::multiple_open::<E::G2Affine>(&c_poly, &pp.g2_powers, pp.n);
+        let table = TableInput::<E> {
+            c_poly,
+            c_com,
+            openings,
+        };
+        table.store(&path);
+
+        // 3. Load
+        let table_loaded = TableInput::load(&path);
+
+        // 4. Test
+        assert_eq!(table, table_loaded);
+        std::fs::remove_file(&path).expect("File can not be deleted");
+    }
+
+    #[allow(non_snake_case)]
+    #[test]
+    fn test_multiple_lookups() {
+        do_multiple_lookups::<Bls12_381>();
+        do_multiple_lookups::<Bls12_377>();
+    }
+
+    #[allow(non_snake_case)]
+    fn do_multiple_lookups<E: PairingEngine>() {
+        let mut rng = ark_std::test_rng();
+
         const MIN_LOG_N: usize = 7;
         const MAX_LOG_N: usize = 15;
         const EPS: usize = 1;
@@ -731,20 +739,20 @@ pub mod tests {
         const MAX_LOG_M: usize = 5;
 
         for n in MIN_LOG_N..=MAX_LOG_N {
-            //1. Setup
+            // 1. Setup
             let N: usize = 1 << n;
-            let powers_size: usize = N + 2; //SRS SIZE
+            let powers_size: usize = N + 2; // SRS SIZE
             println!("N={}", N);
-            let temp_m = n; //dummy
-            let mut pp = setup_multi_lookup(&powers_size, &N, &temp_m, &n);
+            let temp_m = n; // dummy
+            let mut pp = PublicParameters::<E>::setup(&powers_size, &N, &temp_m, &n);
             let actual_degree = N - EPS;
-            //println!("time for powers of tau {:?} for N={:?}", now.elapsed(),N);
+            // println!("time for powers of tau {:?} for N={:?}", now.elapsed(),N);
 
-            //2. Poly and openings
+            // 2. Poly and openings
             let table = get_poly_and_g2_openings(&pp, actual_degree);
 
             for logm in MIN_LOG_M..=std::cmp::min(MAX_LOG_M, n / 2 - 1) {
-                //3. Setup
+                // 3. Setup
                 let now = Instant::now();
                 let mut m = 1 << logm;
                 m = m + 1;
@@ -753,16 +761,16 @@ pub mod tests {
                 pp.regenerate_lookup_params(m);
                 println!("Time to generate aux domain {:?}", now.elapsed());
 
-                //4. Positions
+                // 4. Positions
                 let mut positions: Vec<usize> = vec![];
                 for j in 0..m {
-                    //generate positions evenly distributed in the set
+                    // generate positions evenly distributed in the set
                     let i_j: usize = j * (actual_degree / m);
                     positions.push(i_j);
                 }
 
-                //5. generating phi
-                let blinder: Fp256<FrParameters> = random_field::<Fr>();
+                // 5. generating phi
+                let blinder = E::Fr::rand(&mut rng);
                 let a_m = DensePolynomial::from_coefficients_slice(&[blinder]);
                 let mut phi_poly = a_m.mul_by_vanishing_poly(pp.domain_m);
                 let c_poly_local = table.c_poly.clone();
@@ -770,41 +778,37 @@ pub mod tests {
                     phi_poly = &phi_poly
                         + &(&pp.lagrange_polynomials_m[j]
                             * c_poly_local.evaluate(&pp.domain_N.element(positions[j])));
-                    //adding c(w^{i_j})*mu_j(X)
+                    // adding c(w^{i_j})*mu_j(X)
                 }
 
                 for j in m..pp.domain_m.size() {
                     phi_poly = &phi_poly
                         + &(&pp.lagrange_polynomials_m[j]
-                            * c_poly_local.evaluate(&pp.domain_N.element(0))); //adding c(w^{i_j})*mu_j(X)
+                            * c_poly_local.evaluate(&pp.domain_N.element(0)));
+                    // adding c(w^{i_j})*mu_j(X)
                 }
 
-                //6. Running proofs
+                // 6. Running proofs
                 let now = Instant::now();
-                let (c_com, _) =
-                    KzgBls12_381::commit(&pp.poly_ck, &table.c_poly, None, None).unwrap();
-                let (phi_com, _) =
-                    KzgBls12_381::commit(&pp.poly_ck, &phi_poly, None, None).unwrap();
+                let c_com = KZGCommit::<E>::commit_g1(&pp.poly_ck, &table.c_poly);
+                let phi_com = KZGCommit::<E>::commit_g1(&pp.poly_ck, &phi_poly);
                 println!("Time to generate inputs = {:?}", now.elapsed());
 
-                let lookup_instance = LookupInstance {
-                    c_com: c_com.0.clone(),
-                    phi_com: phi_com.0.clone(),
-                };
+                let lookup_instance = LookupInstance { c_com, phi_com };
 
                 let prover_input = LookupProverInput {
                     c_poly: table.c_poly.clone(),
-                    phi_poly: phi_poly,
-                    positions: positions,
+                    phi_poly,
+                    positions,
                     openings: table.openings.clone(),
                 };
 
                 let now = Instant::now();
                 let (proof, unity_proof) =
-                    compute_lookup_proof(&lookup_instance, &prover_input, &pp);
+                    compute_lookup_proof::<E, _>(&lookup_instance, &prover_input, &pp, &mut rng);
                 println!("Time to generate proof for = {:?}", now.elapsed());
                 let now = Instant::now();
-                let res = verify_lookup_proof(table.c_com, phi_com.0, &proof, &unity_proof, &pp);
+                let res = verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp);
                 println!("Time to verify proof for  = {:?}", now.elapsed());
                 assert!(res);
                 println!("Lookup test succeeded");
@@ -812,34 +816,39 @@ pub mod tests {
         }
     }
 
-    pub fn _do_lookup() {
+    #[allow(non_snake_case)]
+    #[test]
+    fn test_lookup() {
+        do_lookup::<Bls12_381>();
+        do_lookup::<Bls12_377>();
+    }
+
+    fn do_lookup<E: PairingEngine>() {
+        let mut rng = ark_std::test_rng();
+
         let now = Instant::now();
-        let (prover_input, srs) = generate_lookup_input();
+        let (prover_input, srs) = generate_lookup_input(&mut rng);
         println!(
             "Time to generate parameters for n={:?} = {:?}",
             srs.n,
             now.elapsed()
         );
-        //kzg_test(&srs);
-        let (c_com, _) =
-            KzgBls12_381::commit(&srs.poly_ck, &prover_input.c_poly, None, None).unwrap();
-        let (phi_com, _) =
-            KzgBls12_381::commit(&srs.poly_ck, &prover_input.phi_poly, None, None).unwrap();
+        // kzg_test(&srs);
+        let c_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &prover_input.c_poly);
+        let phi_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &prover_input.phi_poly);
 
-        let lookup_instance = LookupInstance {
-            c_com: c_com.0.clone(),
-            phi_com: phi_com.0.clone(),
-        };
+        let lookup_instance = LookupInstance { c_com, phi_com };
 
         let now = Instant::now();
-        let (proof, unity_proof) = compute_lookup_proof(&lookup_instance, &prover_input, &srs);
+        let (proof, unity_proof) =
+            compute_lookup_proof(&lookup_instance, &prover_input, &srs, &mut rng);
         println!(
             "Time to generate proof for m={:?} = {:?}",
             srs.m,
             now.elapsed()
         );
         let now = Instant::now();
-        let res = verify_lookup_proof(c_com.0, phi_com.0, &proof, &unity_proof, &srs);
+        let res = verify_lookup_proof(&c_com, &phi_com, &proof, &unity_proof, &srs);
         println!(
             "Time to verify proof for n={:?} = {:?}",
             srs.n,

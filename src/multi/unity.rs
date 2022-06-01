@@ -1,61 +1,56 @@
-/*
-This file includes the Caulk's unity prover and verifier for multi openings.
-The protocol is described in Figure 4.
-*/
+// This file includes the Caulk's unity prover and verifier for multi openings.
+// The protocol is described in Figure 4.
 
-use ark_bls12_381::{Fr, FrParameters, G1Affine};
-use ark_ec::{msm::VariableBaseMSM, AffineCurve, ProjectiveCurve};
-use ark_ff::Fp256;
+use super::setup::PublicParameters;
+use crate::{util::convert_to_bigints, CaulkTranscript, KZGCommit};
+use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain, Polynomial,
     UVPolynomial,
 };
 use ark_std::{One, Zero};
 
-use crate::caulk_multi_setup::PublicParameters;
-use crate::tools::{
-    bipoly_commit, convert_to_bigints, hash_caulk_multi, kzg_open_g1_native,
-    kzg_partial_open_g1_native, kzg_partial_verify_g1_native, kzg_verify_g1_native, UniPoly381,
-};
-
 // output structure of prove_unity
-pub struct ProofMultiUnity {
-    pub g1_u_bar: G1Affine,
-    pub g1_h_1: G1Affine,
-    pub g1_h_2: G1Affine,
-    pub g1_u_bar_alpha: G1Affine,
-    pub g1_h_2_alpha: G1Affine,
-    pub v1: Fr,
-    pub v2: Fr,
-    pub v3: Fr,
-    pub pi_1: G1Affine,
-    pub pi_2: G1Affine,
-    pub pi_3: G1Affine,
-    pub pi_4: G1Affine,
-    pub pi_5: G1Affine,
+pub struct ProofMultiUnity<E: PairingEngine> {
+    pub g1_u_bar: E::G1Affine,
+    pub g1_h_1: E::G1Affine,
+    pub g1_h_2: E::G1Affine,
+    pub g1_u_bar_alpha: E::G1Affine,
+    pub g1_h_2_alpha: E::G1Affine,
+    pub v1: E::Fr,
+    pub v2: E::Fr,
+    pub v3: E::Fr,
+    pub pi_1: E::G1Affine,
+    pub pi_2: E::G1Affine,
+    pub pi_3: E::G1Affine,
+    pub pi_4: E::G1Affine,
+    pub pi_5: E::G1Affine,
 }
 
-// Prove knowledge of vec_u_evals such that g1_u = g1^(sum_j u_j mu_j(x)) and u_j^N = 1
+// Prove knowledge of vec_u_evals such that g1_u = g1^(sum_j u_j mu_j(x)) and
+// u_j^N = 1
 #[allow(non_snake_case)]
-pub fn prove_multiunity(
-    pp: &PublicParameters,
-    hash_input: &mut Fr,
-    g1_u: &G1Affine,
-    mut vec_u_evals: Vec<Fp256<FrParameters>>,
-    u_poly_quotient: UniPoly381,
-) -> ProofMultiUnity {
-    // The test_rng is deterministic.  Should be replaced with actual random generator.
+pub fn prove_multiunity<E: PairingEngine>(
+    pp: &PublicParameters<E>,
+    transcript: &mut CaulkTranscript<E::Fr>,
+    g1_u: &E::G1Affine,
+    mut vec_u_evals: Vec<E::Fr>,
+    u_poly_quotient: DensePolynomial<E::Fr>,
+) -> ProofMultiUnity<E> {
+    // The test_rng is deterministic.  Should be replaced with actual random
+    // generator.
     let rng_arkworks = &mut ark_std::test_rng();
 
     // let rng_arkworks = &mut ark_std::test_rng();
     let n = pp.n;
     let deg_blinders = 11 / n;
-    let z_Vm: UniPoly381 = pp.domain_m.vanishing_polynomial().into();
+    let z_Vm: DensePolynomial<E::Fr> = pp.domain_m.vanishing_polynomial().into();
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // 1. Compute polynomials u_s(X) = vec_u_polys[s] such that u_s( nu_i ) = w_i^{2^s}
+    // 1. Compute polynomials u_s(X) = vec_u_polys[s] such that u_s( nu_i ) =
+    // w_i^{2^s}
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
-    let mut vec_u_polys: Vec<UniPoly381> = Vec::new();
+    let mut vec_u_polys: Vec<DensePolynomial<E::Fr>> = Vec::new();
 
     vec_u_polys.push(
         EvaluationsOnDomain::from_vec_and_domain(vec_u_evals.clone(), pp.domain_m).interpolate()
@@ -70,7 +65,7 @@ pub fn prove_multiunity(
         vec_u_polys.push(
             EvaluationsOnDomain::from_vec_and_domain(vec_u_evals.clone(), pp.domain_m)
                 .interpolate()
-                + (&z_Vm * &UniPoly381::rand(deg_blinders, rng_arkworks)),
+                + (&z_Vm * &DensePolynomial::<E::Fr>::rand(deg_blinders, rng_arkworks)),
         );
     }
 
@@ -78,16 +73,18 @@ pub fn prove_multiunity(
     // 2. Compute U_bar(X,Y) = sum_{s= 1}^n u_{s-1} rho_s(Y)
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    // bivariate polynomials such that bipoly_U_bar[j] = a_j(Y) where U_bar(X,Y) = sum_j X^j a_j(Y)
+    // bivariate polynomials such that bipoly_U_bar[j] = a_j(Y) where U_bar(X,Y) =
+    // sum_j X^j a_j(Y)
     let mut bipoly_U_bar = Vec::new();
 
-    // vec_u_polys[0]  has an extended degree because it is blinded so use vec_u_polys[1] for the length
+    // vec_u_polys[0]  has an extended degree because it is blinded so use
+    // vec_u_polys[1] for the length
     for j in 0..vec_u_polys[1].len() {
         /*
         Denoting u_{s-1}(X) = sum_j u_{s-1, j} X^j then
         temp is a_j(Y) = sum_{s=1}^n u_{s-1, j} * rho_s(Y)
          */
-        let mut temp = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+        let mut temp = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
         for s in 1..n {
             let u_s_j = DensePolynomial::from_coefficients_slice(&[vec_u_polys[s][j]]);
@@ -106,7 +103,7 @@ pub fn prove_multiunity(
     let id_poly = pp.id_poly.clone();
 
     // Hs(X) = (u_{s-1}^2(X) - u_s(X)) / zVm(X).  Abort if doesn't divide.
-    let mut vec_H_s_polys: Vec<DensePolynomial<Fr>> = Vec::new();
+    let mut vec_H_s_polys: Vec<DensePolynomial<E::Fr>> = Vec::new();
     for s in 1..n {
         let (poly_H_s, remainder) = (&(&vec_u_polys[s - 1] * &vec_u_polys[s - 1])
             - &vec_u_polys[s])
@@ -138,7 +135,7 @@ pub fn prove_multiunity(
 
     // In case length of H_1(X) and H_2(X) is different pad with zeros.
     for _ in vec_H_s_polys[0].len()..vec_H_s_polys[1].len() {
-        let h_0_j = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+        let h_0_j = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
         bipoly_h_2.push(h_0_j);
     }
 
@@ -156,31 +153,26 @@ pub fn prove_multiunity(
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
     // 5. Commit to U_bar(X^n, X) and h_2(X^n, X)
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
-    let g1_u_bar = bipoly_commit(pp, &bipoly_U_bar, pp.domain_n.size());
-    let g1_h_2 = bipoly_commit(pp, &bipoly_h_2, pp.domain_n.size());
+    let g1_u_bar = KZGCommit::<E>::bipoly_commit(pp, &bipoly_U_bar, pp.domain_n.size());
+    let g1_h_2 = KZGCommit::<E>::bipoly_commit(pp, &bipoly_h_2, pp.domain_n.size());
 
     ////////////////////////////
     // 6. alpha = Hash(g1_u, g1_u_bar, g1_h_2)
     ////////////////////////////
-
-    let alpha = hash_caulk_multi::<Fr>(
-        hash_input.clone(),
-        Some(&[&g1_u, &g1_u_bar, &g1_h_2].to_vec()),
-        None,
-        None,
-    );
-
-    *hash_input = alpha.clone();
+    transcript.append_element(b"u", g1_u);
+    transcript.append_element(b"u_bar", &g1_u_bar);
+    transcript.append_element(b"h2", &g1_h_2);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
     // 7. Compute h_1(Y)
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // poly_U_alpha = sum_{s=1}^n u_{s-1}(alpha) rho_s(Y)
-    let mut poly_U_alpha = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+    let mut poly_U_alpha = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
     // poly_Usq_alpha = sum_{s=1}^n u_{s-1}^2(alpha) rho_s(Y)
-    let mut poly_Usq_alpha = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+    let mut poly_Usq_alpha = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
     for s in 0..n {
         let u_s_alpha = vec_u_polys[s].evaluate(&alpha);
@@ -191,8 +183,8 @@ pub fn prove_multiunity(
         poly_Usq_alpha = &poly_Usq_alpha + &(&temp * &pp.lagrange_polynomials_n[s]);
     }
 
-    // divide h1(Y) = [ U^2(alpha,Y) - sum_{s=1}^n u_{s-1}^2(alpha) rho_s(Y) ) ] / zVn(Y)
-    // return an error if division fails
+    // divide h1(Y) = [ U^2(alpha,Y) - sum_{s=1}^n u_{s-1}^2(alpha) rho_s(Y) ) ] /
+    // zVn(Y) return an error if division fails
     let (poly_h_1, remainder) = (&(&poly_U_alpha * &poly_U_alpha) - &poly_Usq_alpha)
         .divide_by_vanishing_poly(pp.domain_n)
         .unwrap();
@@ -209,15 +201,15 @@ pub fn prove_multiunity(
     .into_affine();
 
     ////////////////////////////
-    //9.  beta = Hash( g1_h_1 )
+    // 9.  beta = Hash( g1_h_1 )
     ////////////////////////////
 
-    let beta = hash_caulk_multi::<Fr>(hash_input.clone(), Some(&[&g1_h_1].to_vec()), None, None);
-
-    *hash_input = beta.clone();
+    transcript.append_element(b"h1", &g1_h_1);
+    let beta = transcript.get_and_append_challenge(b"beta");
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // 10. Compute p(Y) = (U^2(alpha, beta) - h1(Y) zVn(beta) ) - (u_bar(alpha, beta sigma^(-1)) + id(alpha) rho_n(Y)) - zVm(alpha )h2(alpha,Y)
+    // 10. Compute p(Y) = (U^2(alpha, beta) - h1(Y) zVn(beta) ) - (u_bar(alpha, beta
+    // sigma^(-1)) + id(alpha) rho_n(Y)) - zVm(alpha )h2(alpha,Y)
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // p(Y) = U^2(alpha, beta)
@@ -229,7 +221,7 @@ pub fn prove_multiunity(
     // p(Y) = p(Y) - ( u_bar(alpha, beta sigma) + id(alpha) rho_n(beta))
 
     // u_bar_alpha_shiftbeta = u_bar(alpha, beta sigma)
-    let mut u_bar_alpha_shiftbeta = Fr::zero();
+    let mut u_bar_alpha_shiftbeta = E::Fr::zero();
     let beta_shift = beta * &pp.domain_n.element(1);
     for s in 1..n {
         let u_s_alpha = vec_u_polys[s].evaluate(&alpha);
@@ -246,7 +238,7 @@ pub fn prove_multiunity(
 
     ////////////////////////////
     // p(Y) = p(Y) - h1(Y) zVn(beta)
-    let z_Vn: UniPoly381 = pp.domain_n.vanishing_polynomial().into();
+    let z_Vn: DensePolynomial<E::Fr> = pp.domain_n.vanishing_polynomial().into();
     let temp = &DensePolynomial::from_coefficients_slice(&[z_Vn.evaluate(&beta)]) * &poly_h_1;
     poly_p = &poly_p - &temp;
 
@@ -254,7 +246,7 @@ pub fn prove_multiunity(
     // p(Y) = p(Y) - z_Vm(alpha) h_2(alpha, Y)
 
     // poly_h_2_alpha = h_2(alpha, Y)
-    let mut poly_h_2_alpha = DensePolynomial::from_coefficients_slice(&[Fr::zero()]);
+    let mut poly_h_2_alpha = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
     for s in 0..vec_H_s_polys.len() {
         let h_s_j = DensePolynomial::from_coefficients_slice(&[vec_H_s_polys[s].evaluate(&alpha)]);
         poly_h_2_alpha = &poly_h_2_alpha + &(&h_s_j * &pp.lagrange_polynomials_n[s]);
@@ -265,92 +257,83 @@ pub fn prove_multiunity(
     poly_p = &poly_p - &temp;
 
     // check p(beta) = 0
-    assert!(poly_p.evaluate(&beta) == Fr::zero());
+    assert!(poly_p.evaluate(&beta) == E::Fr::zero());
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
     // 11. Open KZG commitments
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     // KZG.Open( srs, u(X), deg = bot, X = alpha )
-    let (evals_1, pi_1) = kzg_open_g1_native(&pp.poly_ck, &vec_u_polys[0], None, [&alpha].to_vec());
+    let (evals_1, pi_1) = KZGCommit::open_g1_batch(&pp.poly_ck, &vec_u_polys[0], None, &[alpha]);
 
     // KZG.Open( srs, U_bar(X,Y), deg = bot, X = alpha )
     let (g1_u_bar_alpha, pi_2, poly_u_bar_alpha) =
-        kzg_partial_open_g1_native(&pp, &bipoly_U_bar, pp.domain_n.size(), &alpha);
+        KZGCommit::partial_open_g1(&pp, &bipoly_U_bar, pp.domain_n.size(), &alpha);
 
     // KZG.Open( srs, h_2(X,Y), deg = bot, X = alpha )
     let (g1_h_2_alpha, pi_3, _) =
-        kzg_partial_open_g1_native(&pp, &bipoly_h_2, pp.domain_n.size(), &alpha);
+        KZGCommit::partial_open_g1(&pp, &bipoly_h_2, pp.domain_n.size(), &alpha);
 
-    // KZG.Open( srs, U_bar(alpha,Y), deg = bot, Y = [1, beta, beta * sigma] )   should evaluate to (0, v2, v3)
-    let (evals_2, pi_4) = kzg_open_g1_native(
+    // KZG.Open( srs, U_bar(alpha,Y), deg = bot, Y = [1, beta, beta * sigma] )
+    // should evaluate to (0, v2, v3)
+    let (evals_2, pi_4) = KZGCommit::open_g1_batch(
         &pp.poly_ck,
         &poly_u_bar_alpha,
         Some(&(pp.domain_n.size() - 1)),
-        [&Fr::one(), &beta, &(beta * &pp.domain_n.element(1))].to_vec(),
+        &[E::Fr::one(), beta, (beta * &pp.domain_n.element(1))],
     );
-    assert!(evals_2[0] == Fr::zero());
+    assert!(evals_2[0] == E::Fr::zero());
 
     // KZG.Open(srs, p(Y), deg = n-1, Y = beta)
-    let (evals_3, pi_5) = kzg_open_g1_native(
+    let (evals_3, pi_5) = KZGCommit::open_g1_batch(
         &pp.poly_ck,
         &poly_p,
         Some(&(pp.domain_n.size() - 1)),
-        [&beta].to_vec(),
+        &[beta],
     );
-    assert!(evals_3[0] == Fr::zero());
+    assert!(evals_3[0] == E::Fr::zero());
 
     let proof = ProofMultiUnity {
-        g1_u_bar: g1_u_bar,
-        g1_h_1: g1_h_1,
-        g1_h_2: g1_h_2,
-        g1_u_bar_alpha: g1_u_bar_alpha,
-        g1_h_2_alpha: g1_h_2_alpha,
+        g1_u_bar,
+        g1_h_1,
+        g1_h_2,
+        g1_u_bar_alpha,
+        g1_h_2_alpha,
         v1: evals_1[0],
         v2: evals_2[1],
         v3: evals_2[2],
-        pi_1: pi_1,
-        pi_2: pi_2,
-        pi_3: pi_3,
-        pi_4: pi_4,
-        pi_5: pi_5,
+        pi_1,
+        pi_2,
+        pi_3,
+        pi_4,
+        pi_5,
     };
 
     proof
 }
 
-// Verify that the prover knows vec_u_evals such that g1_u = g1^(sum_j u_j mu_j(x)) and u_j^N = 1
+// Verify that the prover knows vec_u_evals such that g1_u = g1^(sum_j u_j
+// mu_j(x)) and u_j^N = 1
 #[allow(non_snake_case)]
-pub fn verify_multiunity(
-    pp: &PublicParameters,
-    hash_input: &mut Fr,
-    g1_u: G1Affine,
-    pi_unity: &ProofMultiUnity,
+pub fn verify_multiunity<E: PairingEngine>(
+    pp: &PublicParameters<E>,
+    transcript: &mut CaulkTranscript<E::Fr>,
+    g1_u: &E::G1Affine,
+    pi_unity: &ProofMultiUnity<E>,
 ) -> bool {
     ////////////////////////////
     // alpha = Hash(g1_u, g1_u_bar, g1_h_2)
     ////////////////////////////
-
-    let alpha = hash_caulk_multi::<Fr>(
-        hash_input.clone(),
-        Some(&[&g1_u, &pi_unity.g1_u_bar, &pi_unity.g1_h_2].to_vec()),
-        None,
-        None,
-    );
-
-    *hash_input = alpha.clone();
+    transcript.append_element(b"u", g1_u);
+    transcript.append_element(b"u_bar", &pi_unity.g1_u_bar);
+    transcript.append_element(b"h2", &pi_unity.g1_h_2);
+    let alpha = transcript.get_and_append_challenge(b"alpha");
 
     ////////////////////////////
     // beta = Hash( g1_h_1 )
     ////////////////////////////
-    let beta = hash_caulk_multi::<Fr>(
-        hash_input.clone(),
-        Some(&[&pi_unity.g1_h_1].to_vec()),
-        None,
-        None,
-    );
-
-    *hash_input = beta.clone();
+    transcript.append_element(b"h1", &pi_unity.g1_h_1);
+    let beta = transcript.get_and_append_challenge(b"beta");
 
     /////////////////////////////
     // Compute [P]_1
@@ -378,45 +361,48 @@ pub fn verify_multiunity(
     // Check the KZG openings
     ////////////////////////////
 
-    let check1 = kzg_verify_g1_native(
-        &pp,
-        g1_u.clone(),
+    let check1 = KZGCommit::<E>::verify_g1(
+        &pp.poly_ck.powers_of_g,
+        &pp.g2_powers,
+        &g1_u,
         None,
-        [alpha].to_vec(),
-        [pi_unity.v1].to_vec(),
-        pi_unity.pi_1,
+        &[alpha],
+        &[pi_unity.v1],
+        &pi_unity.pi_1,
     );
-    let check2 = kzg_partial_verify_g1_native(
+    let check2 = KZGCommit::partial_verify_g1(
         &pp,
-        pi_unity.g1_u_bar,
+        &pi_unity.g1_u_bar,
         pp.domain_n.size(),
-        alpha,
-        pi_unity.g1_u_bar_alpha,
-        pi_unity.pi_2,
+        &alpha,
+        &pi_unity.g1_u_bar_alpha,
+        &pi_unity.pi_2,
     );
-    let check3 = kzg_partial_verify_g1_native(
+    let check3 = KZGCommit::partial_verify_g1(
         &pp,
-        pi_unity.g1_h_2,
+        &pi_unity.g1_h_2,
         pp.domain_n.size(),
-        alpha,
-        pi_unity.g1_h_2_alpha,
-        pi_unity.pi_3,
+        &alpha,
+        &pi_unity.g1_h_2_alpha,
+        &pi_unity.pi_3,
     );
-    let check4 = kzg_verify_g1_native(
-        &pp,
-        pi_unity.g1_u_bar_alpha,
+    let check4 = KZGCommit::<E>::verify_g1(
+        &pp.poly_ck.powers_of_g,
+        &pp.g2_powers,
+        &pi_unity.g1_u_bar_alpha,
         Some(&(pp.domain_n.size() - 1)),
-        [Fr::one(), beta, beta * &pp.domain_n.element(1)].to_vec(),
-        [Fr::zero(), pi_unity.v2, pi_unity.v3].to_vec(),
-        pi_unity.pi_4,
+        &[E::Fr::one(), beta, beta * &pp.domain_n.element(1)],
+        &[E::Fr::zero(), pi_unity.v2, pi_unity.v3],
+        &pi_unity.pi_4,
     );
-    let check5 = kzg_verify_g1_native(
-        &pp,
-        g1_P.into_affine(),
+    let check5 = KZGCommit::<E>::verify_g1(
+        &pp.poly_ck.powers_of_g,
+        &pp.g2_powers,
+        &g1_P.into_affine(),
         Some(&(pp.domain_n.size() - 1)),
-        [beta].to_vec(),
-        [Fr::zero()].to_vec(),
-        pi_unity.pi_5,
+        &[beta],
+        &[E::Fr::zero()],
+        &pi_unity.pi_5,
     );
 
     return check1 && check2 && check3 && check4 && check5;
@@ -424,24 +410,30 @@ pub fn verify_multiunity(
 
 #[cfg(test)]
 pub mod tests {
-    use crate::caulk_multi_setup::setup_multi_lookup;
-    use crate::caulk_multi_unity::{prove_multiunity, verify_multiunity};
-    use crate::tools::{convert_to_bigints, UniPoly381};
+    use super::{prove_multiunity, verify_multiunity};
+    use crate::{util::convert_to_bigints, CaulkTranscript};
+    use ark_bls12_377::Bls12_377;
+    use ark_bls12_381::Bls12_381;
+    use ark_ec::{msm::VariableBaseMSM, PairingEngine, ProjectiveCurve};
+    use ark_poly::{
+        univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain,
+        UVPolynomial,
+    };
+    use ark_std::test_rng;
     use rand::Rng;
     use std::time::Instant;
 
-    use ark_bls12_381::FrParameters;
-    use ark_ec::{msm::VariableBaseMSM, ProjectiveCurve};
-    use ark_ff::Fp256;
-    use ark_poly::{EvaluationDomain, Evaluations as EvaluationsOnDomain, UVPolynomial};
-
-    //#[test]
-    #[allow(non_snake_case)]
     #[test]
-    pub fn test_unity() {
-        let mut rng = rand::thread_rng();
+    fn test_unity() {
+        test_unity_helper::<Bls12_377>();
+        test_unity_helper::<Bls12_381>();
+    }
 
-        let n: usize = 8; //bitlength of poly degree
+    #[allow(non_snake_case)]
+    fn test_unity_helper<E: PairingEngine>() {
+        let mut rng = test_rng();
+
+        let n: usize = 8; // bitlength of poly degree
         let max_degree: usize = (1 << n) + 2;
         let N: usize = (1 << n) - 1;
 
@@ -450,7 +442,7 @@ pub mod tests {
 
         // run the setup
         let now = Instant::now();
-        let pp = setup_multi_lookup(&max_degree, &N, &m, &n);
+        let pp = crate::multi::PublicParameters::<E>::setup(&max_degree, &N, &m, &n);
         println!(
             "time to setup single openings of table size {:?} = {:?}",
             N + 1,
@@ -462,20 +454,19 @@ pub mod tests {
         ////////////////////////////////////////////////////////////////////////////////////
 
         // choose [u1, ..., um] such that uj**N = 1
-        let mut vec_u_evals: Vec<Fp256<FrParameters>> = Vec::new();
+        let mut vec_u_evals: Vec<E::Fr> = Vec::new();
         for _ in 0..m {
-            let j = rng.gen_range(0, pp.domain_N.size());
+            let j = rng.gen_range(0..pp.domain_N.size());
             vec_u_evals.push(pp.domain_N.element(j));
         }
 
         // choose random quotient polynomial of degree 1.
-        let rng_arkworks = &mut ark_std::test_rng();
-        let u_poly_quotient = UniPoly381::rand(5, rng_arkworks);
+        let u_poly_quotient = DensePolynomial::<E::Fr>::rand(5, &mut rng);
 
         // X^m - 1
-        let z_Vm: UniPoly381 = pp.domain_m.vanishing_polynomial().into();
+        let z_Vm: DensePolynomial<E::Fr> = pp.domain_m.vanishing_polynomial().into();
 
-        //commit to polynomial u(X) = sum_j uj muj(X) + u_quotient(X) z_Vm(X)
+        // commit to polynomial u(X) = sum_j uj muj(X) + u_quotient(X) z_Vm(X)
         let u_poly = &EvaluationsOnDomain::from_vec_and_domain(vec_u_evals.clone(), pp.domain_m)
             .interpolate()
             + &(&u_poly_quotient * &z_Vm);
@@ -490,14 +481,22 @@ pub mod tests {
         ////////////////////////////////////////////////////////////////////////////////////
         // run the prover
         ////////////////////////////////////////////////////////////////////////////////////
-        let pi_unity = prove_multiunity(&pp, &g1_u, vec_u_evals.clone(), u_poly_quotient);
+        let mut prover_transcript = CaulkTranscript::new();
+        let pi_unity = prove_multiunity::<E>(
+            &pp,
+            &mut prover_transcript,
+            &g1_u,
+            vec_u_evals.clone(),
+            u_poly_quotient,
+        );
 
         ////////////////////////////////////////////////////////////////////////////////////
         // run the verifier
         ////////////////////////////////////////////////////////////////////////////////////
+        let mut verifier_transcript = CaulkTranscript::new();
         println!(
             "unity proof verifies {:?}",
-            verify_multiunity(&pp, g1_u, pi_unity)
+            verify_multiunity::<E>(&pp, &mut verifier_transcript, &g1_u, &pi_unity)
         );
     }
 }

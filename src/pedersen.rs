@@ -1,7 +1,6 @@
-/*
-This file includes a prover and verifier for demonstrating knowledge of an opening of a Pedersen commitment.
-The protocol is informally described in Appendix A.2, Proof of Opening of a Pedersen Commitment
-*/
+// This file includes a prover and verifier for demonstrating knowledge of an
+// opening of a Pedersen commitment. The protocol is informally described in
+// Appendix A.2, Proof of Opening of a Pedersen Commitment
 
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, ProjectiveCurve};

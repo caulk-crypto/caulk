@@ -1,16 +1,15 @@
 use ark_bls12_381::{Bls12_381, Fr, G1Affine};
 use ark_ec::{AffineCurve, ProjectiveCurve};
-use ark_poly::univariate::DensePolynomial;
-use ark_poly::{EvaluationDomain, GeneralEvaluationDomain, Polynomial, UVPolynomial};
+use ark_poly::{
+    univariate::DensePolynomial, EvaluationDomain, GeneralEvaluationDomain, Polynomial,
+    UVPolynomial,
+};
 use ark_poly_commit::kzg10::KZG10;
-use ark_std::test_rng;
-use ark_std::UniformRand;
-use caulk_single_opening::caulk_single_setup;
-use caulk_single_opening::CaulkTranscript;
-use caulk_single_opening::KZGCommit;
-use caulk_single_opening::{caulk_single_prove, caulk_single_verify};
-use std::time::Instant;
-use std::{error::Error, io, str::FromStr};
+use ark_std::{test_rng, UniformRand};
+use caulk::{
+    caulk_single_prove, caulk_single_setup, caulk_single_verify, CaulkTranscript, KZGCommit,
+};
+use std::{error::Error, io, str::FromStr, time::Instant};
 
 type UniPoly381 = DensePolynomial<Fr>;
 type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
@@ -48,7 +47,7 @@ fn main() {
         now.elapsed()
     );
 
-    //polynomial and commitment
+    // polynomial and commitment
     let now = Instant::now();
     // deterministic randomness.  Should never be used in practice.
     let c_poly = UniPoly381::rand(actual_degree, &mut rng);
@@ -60,7 +59,7 @@ fn main() {
         now.elapsed()
     );
 
-    //point at which we will open c_com
+    // point at which we will open c_com
     let input_domain: GeneralEvaluationDomain<Fr> = EvaluationDomain::new(actual_degree).unwrap();
     println!("Which position in the vector should we open at? ");
     let position: usize = read_line();
@@ -71,7 +70,7 @@ fn main() {
     );
     let omega_i = input_domain.element(position);
 
-    //Deciding whether to open all positions or just the one position.
+    // Deciding whether to open all positions or just the one position.
     println!("Should we open all possible positions? Opening all possible positions is slow.  Please input either YES or NO" );
     let open_all: String = read_line();
 
@@ -92,9 +91,10 @@ fn main() {
             "Console input is invalid"
         );
 
-        //compute all openings
+        // compute all openings
         let now = Instant::now();
-        let g1_qs = KZGCommit::multiple_open(&c_poly, &pp.poly_ck, p);
+        let g1_qs =
+            KZGCommit::<Bls12_381>::multiple_open::<G1Affine>(&c_poly, &pp.poly_ck.powers_of_g, p);
         g1_q = g1_qs[position];
         println!("Time to compute all KZG openings {:?}", now.elapsed());
     }

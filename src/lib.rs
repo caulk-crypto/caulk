@@ -1,32 +1,32 @@
-mod caulk_single;
-mod caulk_single_setup;
-mod caulk_single_unity;
 mod dft;
 mod kzg;
+pub mod multi;
 mod pedersen;
+mod single;
 mod transcript;
+pub(crate) mod util;
 
-pub use caulk_single::{caulk_single_prove, caulk_single_verify};
-pub use caulk_single_setup::caulk_single_setup;
 pub use dft::*;
 pub use kzg::KZGCommit;
+pub use multi::PublicParameters;
 pub use pedersen::PedersenParam;
+pub use single::{caulk_single_prove, caulk_single_verify, setup::caulk_single_setup};
 pub use transcript::CaulkTranscript;
 
 #[cfg(test)]
 mod tests {
 
-    use crate::caulk_single_setup;
-    use crate::CaulkTranscript;
-    use crate::KZGCommit;
-    use crate::{caulk_single_prove, caulk_single_verify};
-    use ark_bls12_381::{Bls12_381, Fr};
+    use crate::{
+        caulk_single_prove, caulk_single_setup, caulk_single_verify, CaulkTranscript, KZGCommit,
+    };
+    use ark_bls12_381::{Bls12_381, Fr, G1Affine};
     use ark_ec::{AffineCurve, ProjectiveCurve};
-    use ark_poly::univariate::DensePolynomial;
-    use ark_poly::{EvaluationDomain, GeneralEvaluationDomain, Polynomial, UVPolynomial};
+    use ark_poly::{
+        univariate::DensePolynomial, EvaluationDomain, GeneralEvaluationDomain, Polynomial,
+        UVPolynomial,
+    };
     use ark_poly_commit::kzg10::KZG10;
-    use ark_std::test_rng;
-    use ark_std::UniformRand;
+    use ark_std::{test_rng, UniformRand};
 
     type UniPoly381 = DensePolynomial<Fr>;
     type KzgBls12_381 = KZG10<Bls12_381, UniPoly381>;
@@ -50,7 +50,7 @@ mod tests {
             let (g1_C, _) = KzgBls12_381::commit(&pp.poly_ck, &c_poly, None, None).unwrap();
             let g1_C = g1_C.0;
 
-            //point at which we will open c_com
+            // point at which we will open c_com
             let input_domain: GeneralEvaluationDomain<Fr> =
                 EvaluationDomain::new(actual_degree).unwrap();
 
@@ -96,7 +96,11 @@ mod tests {
             }
             // compute all openings
             {
-                let g1_qs = KZGCommit::multiple_open(&c_poly, &pp.poly_ck, p);
+                let g1_qs = KZGCommit::<Bls12_381>::multiple_open::<G1Affine>(
+                    &c_poly,
+                    &pp.poly_ck.powers_of_g,
+                    p,
+                );
                 let g1_q = g1_qs[position];
 
                 // run the prover

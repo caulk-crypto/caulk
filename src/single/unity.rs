@@ -1,11 +1,8 @@
-/*
-This file includes the Caulk's unity prover and verifier for single openings.
-The protocol is described in Figure 2.
-*/
+// This file includes the Caulk's unity prover and verifier for single openings.
+// The protocol is described in Figure 2.
 
-use crate::caulk_single_setup::{PublicParameters, VerifierPublicParameters};
-use crate::kzg::KZGCommit;
-use crate::CaulkTranscript;
+use super::setup::{PublicParameters, VerifierPublicParameters};
+use crate::{kzg::KZGCommit, CaulkTranscript};
 use ark_ec::{AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::Field;
 use ark_poly::{
@@ -13,8 +10,7 @@ use ark_poly::{
     GeneralEvaluationDomain, Polynomial, UVPolynomial,
 };
 use ark_poly_commit::kzg10::*;
-use ark_std::{cfg_into_iter, One, Zero};
-use ark_std::{rand::RngCore, UniformRand};
+use ark_std::{cfg_into_iter, rand::RngCore, One, UniformRand, Zero};
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -167,7 +163,8 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     let mut p_poly =
         &(&f_poly - &a_poly) * &(&pp.lagrange_polynomials_Vn[0] + &pp.lagrange_polynomials_Vn[1]);
 
-    // p(X) = p(X) + ( (1 - sigma) f(X) -  f(sigma^(-2)X) + f(sigma^(-1) X) ) rho_3(X)
+    // p(X) = p(X) + ( (1 - sigma) f(X) -  f(sigma^(-2)X) + f(sigma^(-1) X) )
+    // rho_3(X)
     p_poly = &p_poly
         + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(E::Fr::one() - sigma)])
             * &f_poly)
@@ -186,7 +183,8 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     p_poly = &p_poly
         + &(&(&(&f_poly * &f_poly_shift_1) - &f_poly_shift_2) * &pp.lagrange_polynomials_Vn[4]);
 
-    // p(X) = p(X) + ( f(X)  - f(sigma^(-1) X) *  f(sigma^(-1)X)    ) prod_(i not in [5, .. , logN + 4]) (X - sigma^i)
+    // p(X) = p(X) + ( f(X)  - f(sigma^(-1) X) *  f(sigma^(-1)X)    ) prod_(i not in
+    // [5, .. , logN + 4]) (X - sigma^i)
     p_poly = &p_poly + &(&(&f_poly - &(&f_poly_shift_1 * &f_poly_shift_1)) * &pp.poly_prod);
 
     // p(X) = p(X) + (  f(sigma^(-1) X) -  1    ) rho_(logN + 6)(X)
@@ -201,8 +199,8 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     ////////////////////////////
     // Commit to f(X) and h(X)
     ////////////////////////////
-    let g1_F = KZGCommit::<E>::commit(&pp.poly_ck, &f_poly);
-    let h_hat_com = KZGCommit::<E>::commit(&pp.poly_ck, &h_hat_poly);
+    let g1_F = KZGCommit::<E>::commit_g1(&pp.poly_ck, &f_poly);
+    let h_hat_com = KZGCommit::<E>::commit_g1(&pp.poly_ck, &h_hat_poly);
 
     // g1_H is a commitment to h_hat_poly + X^(d-1) z(X)
     let g1_H = (h_hat_com.into_projective() + pp.gxd.mul(-*a) + pp.gxpen.mul(*b)).into_affine();
@@ -267,14 +265,14 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     // p_alpha(X) = p_alpha(X) + ( v1 f(X) - v2  ) rho5(alpha)
     p_alpha_poly = &p_alpha_poly + &(&(&(&f_poly * &pv1) - &pv2) * &prho5);
 
-    // p_alpha(X) = p_alpha(X) + (  f(X) - v1^2  ) prod_(i not in [5, .. , logN + 4]) (alpha - sigma^i)
+    // p_alpha(X) = p_alpha(X) + (  f(X) - v1^2  ) prod_(i not in [5, .. , logN +
+    // 4]) (alpha - sigma^i)
     p_alpha_poly = &p_alpha_poly + &(&(&f_poly - &(&pv1 * &pv1)) * &ppolyprod);
 
-    /*
-    Differing slightly from paper
-    Paper uses p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(n)(alpha) assuming that logN  = n - 6
-    We use p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(logN + 6)(alpha) to allow for any value of logN
-     */
+    // Differing slightly from paper
+    // Paper uses p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(n)(alpha) assuming that
+    // logN  = n - 6 We use p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(logN +
+    // 6)(alpha) to allow for any value of logN
     p_alpha_poly = &p_alpha_poly
         + &(&(&pv1 - &(DensePolynomial::from_coefficients_slice(&[E::Fr::one()]))) * &prhologN6);
 
@@ -363,9 +361,11 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     // pprod = prod_(i not in  [5,..,logN+4]) (alpha - w^i)
     let pprod = vk.poly_prod.evaluate(&alpha);
 
-    // P = H^(-z(alpha)) * F^(rho0(alpha) + L_1(alpha) + (1 - w)L_2(alpha) + L_3(alpha) + v1 L_4(alpha)
-    //                      + prod_(i not in  [5,..,logN+4]) (alpha - w^i))
-    //                 * g^( (v1 -v2)L_2(alpha) + (v2 - w v1)L_3(alpha) - v2 L_4(alpha) + (v1 - 1)L_(logN+5)(alpha)
+    // P = H^(-z(alpha)) * F^(rho0(alpha) + L_1(alpha) + (1 - w)L_2(alpha) +
+    // L_3(alpha) + v1 L_4(alpha)                      + prod_(i not in
+    // [5,..,logN+4]) (alpha - w^i))
+    //                 * g^( (v1 -v2)L_2(alpha) + (v2 - w v1)L_3(alpha) - v2
+    //                   L_4(alpha) + (v1 - 1)L_(logN+5)(alpha)
     //                      - v1^2 * prod_(i not in  [5,..,logN+4]) (alpha - w^i) )
     let g1_p = proof.g1_H.mul(-zalpha)
         + proof
@@ -397,9 +397,9 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
 
     let g1_q = proof.pi2;
 
-    // check that e(P Q3^(-alpha), g2)e( g^(-(rho0 + rho1) - zH(alpha) x^(d-1)), A ) e( Q3, g2^x ) = 1
-    // Had  to move A from affine to projective and back to affine to get it to compile.
-    // No idea what difference this makes.
+    // check that e(P Q3^(-alpha), g2)e( g^(-(rho0 + rho1) - zH(alpha) x^(d-1)), A )
+    // e( Q3, g2^x ) = 1 Had  to move A from affine to projective and back to
+    // affine to get it to compile. No idea what difference this makes.
     let eq1 = vec![
         (
             (g1_p + g1_q.mul(alpha)).into_affine().into(),
