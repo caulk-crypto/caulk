@@ -38,14 +38,14 @@ pub struct LookupParameters<F: PrimeField> {
 
 impl<F: PrimeField> LookupParameters<F> {
     fn new(m: usize) -> Self {
-        let domain_m: GeneralEvaluationDomain<F> = GeneralEvaluationDomain::new(m.clone()).unwrap();
+        let domain_m: GeneralEvaluationDomain<F> = GeneralEvaluationDomain::new(m).unwrap();
 
         // id_poly(X) = 1 for omega_m in range and 0 for omega_m not in range.
         let mut id_vec = Vec::new();
-        for _ in 0..m.clone() {
+        for _ in 0..m {
             id_vec.push(F::one());
         }
-        for _ in m.clone()..domain_m.size() {
+        for _ in m..domain_m.size() {
             id_vec.push(F::zero());
         }
         let id_poly = EvaluationsOnDomain::from_vec_and_domain(id_vec, domain_m).interpolate();
@@ -205,8 +205,8 @@ impl<E: PairingEngine> PublicParameters<E> {
         }
 
         let vk = VerifierKey {
-            g: powers_of_g[0].clone(),
-            gamma_g: powers_of_gamma_g[0].clone(),
+            g: powers_of_g[0],
+            gamma_g: powers_of_gamma_g[0],
             h,
             beta_h,
             prepared_h: h.into(),
@@ -255,13 +255,12 @@ impl<E: PairingEngine> PublicParameters<E> {
             Err(_) => {
                 let rng = &mut ark_std::test_rng();
                 let now = Instant::now();
-                let srs = KZG10::<E, DensePolynomial<E::Fr>>::setup(max_degree.clone(), true, rng)
-                    .unwrap();
+                let srs =
+                    KZG10::<E, DensePolynomial<E::Fr>>::setup(*max_degree, true, rng).unwrap();
                 println!("time to setup powers = {:?}", now.elapsed());
 
                 // trim down to size
-                let (poly_ck2, poly_vk2) =
-                    trim::<E, DensePolynomial<E::Fr>>(&srs, max_degree.clone());
+                let (poly_ck2, poly_vk2) = trim::<E, DensePolynomial<E::Fr>>(&srs, *max_degree);
                 poly_ck = Powers {
                     powers_of_g: ark_std::borrow::Cow::Owned(poly_ck2.powers_of_g.into()),
                     powers_of_gamma_g: ark_std::borrow::Cow::Owned(
@@ -274,12 +273,11 @@ impl<E: PairingEngine> PublicParameters<E> {
                 // arkworks setup doesn't give these powers but the setup does use a fixed
                 // randomness to generate them. so we can generate powers of g2
                 // directly.
-                let rng = &mut ark_std::test_rng();
                 let beta = E::Fr::rand(rng);
-                let mut temp = poly_vk.h.clone();
+                let mut temp = poly_vk.h;
 
                 for _ in 0..poly_ck.powers_of_g.len() {
-                    g2_powers.push(temp.clone());
+                    g2_powers.push(temp);
                     temp = temp.mul(beta).into_affine();
                 }
 
@@ -288,10 +286,8 @@ impl<E: PairingEngine> PublicParameters<E> {
         }
 
         // domain where openings {w_i}_{i in I} are embedded
-        let domain_n: GeneralEvaluationDomain<E::Fr> =
-            GeneralEvaluationDomain::new(n.clone()).unwrap();
-        let domain_N: GeneralEvaluationDomain<E::Fr> =
-            GeneralEvaluationDomain::new(N.clone()).unwrap();
+        let domain_n: GeneralEvaluationDomain<E::Fr> = GeneralEvaluationDomain::new(*n).unwrap();
+        let domain_N: GeneralEvaluationDomain<E::Fr> = GeneralEvaluationDomain::new(*N).unwrap();
 
         // precomputation to speed up prover
         // lagrange_polynomials[i] = polynomial equal to 0 at w^j for j!= i and 1  at
@@ -322,10 +318,10 @@ impl<E: PairingEngine> PublicParameters<E> {
             id_poly: lp.id_poly,
             domain_N,
             verifier_pp,
-            N: N.clone(),
-            n: n.clone(),
-            m: lp.m.clone(),
-            g2_powers: g2_powers.clone(),
+            N: *N,
+            n: *n,
+            m: lp.m,
+            g2_powers,
         };
         if store_to_file {
             pp.store(&path);

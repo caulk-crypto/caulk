@@ -4,6 +4,7 @@
 use super::setup::PublicParameters;
 use crate::{util::convert_to_bigints, CaulkTranscript, KZGCommit};
 use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
+use ark_ff::Field;
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations as EvaluationsOnDomain, Polynomial,
     UVPolynomial,
@@ -50,16 +51,14 @@ pub fn prove_multiunity<E: PairingEngine>(
     // 1. Compute polynomials u_s(X) = vec_u_polys[s] such that u_s( nu_i ) =
     // w_i^{2^s}
     //////////////////////////////////////////////////////////////////////////////////////////////////////////
-    let mut vec_u_polys: Vec<DensePolynomial<E::Fr>> = Vec::new();
-
-    vec_u_polys.push(
+    let mut vec_u_polys = vec![
         EvaluationsOnDomain::from_vec_and_domain(vec_u_evals.clone(), pp.domain_m).interpolate()
             + (&z_Vm * &u_poly_quotient),
-    );
+    ];
 
     for _ in 1..pp.domain_n.size() {
-        for i in 0..vec_u_evals.len() {
-            vec_u_evals[i] = vec_u_evals[i] * vec_u_evals[i].clone();
+        for u_eval in &mut vec_u_evals {
+            *u_eval = u_eval.square();
         }
 
         vec_u_polys.push(
@@ -86,9 +85,9 @@ pub fn prove_multiunity<E: PairingEngine>(
          */
         let mut temp = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
-        for s in 1..n {
-            let u_s_j = DensePolynomial::from_coefficients_slice(&[vec_u_polys[s][j]]);
-            temp = &temp + &(&u_s_j * &pp.lagrange_polynomials_n[s]);
+        for (s, u_poly) in vec_u_polys.iter().enumerate().take(n).skip(1){
+            let u_s_j = DensePolynomial::from_coefficients_slice(&[u_poly[j]]);
+            temp += &(&u_s_j * &pp.lagrange_polynomials_n[s]);
         }
 
         // add a_j(X) to U_bar(X,Y)
@@ -140,13 +139,17 @@ pub fn prove_multiunity<E: PairingEngine>(
     }
 
     // h_2(X,Y) = sum_j ( sum_s H_{s,j} * rho_s(Y) ) X^j
-    for j in 0..vec_H_s_polys[1].len() {
+    for (j, coeff) in bipoly_h_2
+        .iter_mut()
+        .enumerate()
+        .take(vec_H_s_polys[1].len())
+    {
         // h_2[j] = sum_s H_{s,j} * rho_s(Y)
-        for s in 1..n {
-            let h_s_j = DensePolynomial::from_coefficients_slice(&[vec_H_s_polys[s][j]]);
+        for (s, H_s_poly) in vec_H_s_polys.iter().enumerate().take(n).skip(1) {
+            let h_s_j = DensePolynomial::from_coefficients_slice(&[H_s_poly[j]]);
 
             // h_2[j] += H_{s,j} * rho_s(Y)
-            bipoly_h_2[j] = &bipoly_h_2[j] + &(&h_s_j * &pp.lagrange_polynomials_n[s]);
+            *coeff += &(&h_s_j * &pp.lagrange_polynomials_n[s]);
         }
     }
 
@@ -174,13 +177,13 @@ pub fn prove_multiunity<E: PairingEngine>(
     // poly_Usq_alpha = sum_{s=1}^n u_{s-1}^2(alpha) rho_s(Y)
     let mut poly_Usq_alpha = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
-    for s in 0..n {
-        let u_s_alpha = vec_u_polys[s].evaluate(&alpha);
+    for (s, u_poly) in vec_u_polys.iter().enumerate().take(n) {
+        let u_s_alpha = u_poly.evaluate(&alpha);
         let mut temp = DensePolynomial::from_coefficients_slice(&[u_s_alpha]);
-        poly_U_alpha = &poly_U_alpha + &(&temp * &pp.lagrange_polynomials_n[s]);
+        poly_U_alpha += &(&temp * &pp.lagrange_polynomials_n[s]);
 
-        temp = DensePolynomial::from_coefficients_slice(&[u_s_alpha.clone() * &u_s_alpha]);
-        poly_Usq_alpha = &poly_Usq_alpha + &(&temp * &pp.lagrange_polynomials_n[s]);
+        temp = DensePolynomial::from_coefficients_slice(&[u_s_alpha.square()]);
+        poly_Usq_alpha += &(&temp * &pp.lagrange_polynomials_n[s]);
     }
 
     // divide h1(Y) = [ U^2(alpha,Y) - sum_{s=1}^n u_{s-1}^2(alpha) rho_s(Y) ) ] /
@@ -214,24 +217,22 @@ pub fn prove_multiunity<E: PairingEngine>(
 
     // p(Y) = U^2(alpha, beta)
     let u_alpha_beta = poly_U_alpha.evaluate(&beta);
-    let mut poly_p =
-        DensePolynomial::from_coefficients_slice(&[u_alpha_beta.clone() * &u_alpha_beta]);
+    let mut poly_p = DensePolynomial::from_coefficients_slice(&[u_alpha_beta.square()]);
 
     ////////////////////////////
     // p(Y) = p(Y) - ( u_bar(alpha, beta sigma) + id(alpha) rho_n(beta))
 
     // u_bar_alpha_shiftbeta = u_bar(alpha, beta sigma)
     let mut u_bar_alpha_shiftbeta = E::Fr::zero();
-    let beta_shift = beta * &pp.domain_n.element(1);
-    for s in 1..n {
-        let u_s_alpha = vec_u_polys[s].evaluate(&alpha);
-        u_bar_alpha_shiftbeta = u_bar_alpha_shiftbeta
-            + &(u_s_alpha * &pp.lagrange_polynomials_n[s].evaluate(&beta_shift));
+    let beta_shift = beta * pp.domain_n.element(1);
+    for (s, u_ploy) in vec_u_polys.iter().enumerate().take(n).skip(1) {
+        let u_s_alpha = u_ploy.evaluate(&alpha);
+        u_bar_alpha_shiftbeta += u_s_alpha * pp.lagrange_polynomials_n[s].evaluate(&beta_shift);
     }
 
     // temp = u_bar(alpha, beta sigma) + id(alpha) rho_n(beta)
     let temp = u_bar_alpha_shiftbeta
-        + &(id_poly.evaluate(&alpha) * &pp.lagrange_polynomials_n[n - 1].evaluate(&beta));
+        + (id_poly.evaluate(&alpha) * pp.lagrange_polynomials_n[n - 1].evaluate(&beta));
     let temp = DensePolynomial::from_coefficients_slice(&[temp]);
 
     poly_p = &poly_p - &temp;
@@ -247,8 +248,8 @@ pub fn prove_multiunity<E: PairingEngine>(
 
     // poly_h_2_alpha = h_2(alpha, Y)
     let mut poly_h_2_alpha = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
-    for s in 0..vec_H_s_polys.len() {
-        let h_s_j = DensePolynomial::from_coefficients_slice(&[vec_H_s_polys[s].evaluate(&alpha)]);
+    for (s, H_s_poly) in vec_H_s_polys.iter().enumerate() {
+        let h_s_j = DensePolynomial::from_coefficients_slice(&[H_s_poly.evaluate(&alpha)]);
         poly_h_2_alpha = &poly_h_2_alpha + &(&h_s_j * &pp.lagrange_polynomials_n[s]);
     }
 
@@ -268,11 +269,11 @@ pub fn prove_multiunity<E: PairingEngine>(
 
     // KZG.Open( srs, U_bar(X,Y), deg = bot, X = alpha )
     let (g1_u_bar_alpha, pi_2, poly_u_bar_alpha) =
-        KZGCommit::partial_open_g1(&pp, &bipoly_U_bar, pp.domain_n.size(), &alpha);
+        KZGCommit::partial_open_g1(pp, &bipoly_U_bar, pp.domain_n.size(), &alpha);
 
     // KZG.Open( srs, h_2(X,Y), deg = bot, X = alpha )
     let (g1_h_2_alpha, pi_3, _) =
-        KZGCommit::partial_open_g1(&pp, &bipoly_h_2, pp.domain_n.size(), &alpha);
+        KZGCommit::partial_open_g1(pp, &bipoly_h_2, pp.domain_n.size(), &alpha);
 
     // KZG.Open( srs, U_bar(alpha,Y), deg = bot, Y = [1, beta, beta * sigma] )
     // should evaluate to (0, v2, v3)
@@ -280,7 +281,7 @@ pub fn prove_multiunity<E: PairingEngine>(
         &pp.poly_ck,
         &poly_u_bar_alpha,
         Some(&(pp.domain_n.size() - 1)),
-        &[E::Fr::one(), beta, (beta * &pp.domain_n.element(1))],
+        &[E::Fr::one(), beta, beta * pp.domain_n.element(1)],
     );
     assert!(evals_2[0] == E::Fr::zero());
 
@@ -293,7 +294,7 @@ pub fn prove_multiunity<E: PairingEngine>(
     );
     assert!(evals_3[0] == E::Fr::zero());
 
-    let proof = ProofMultiUnity {
+    ProofMultiUnity {
         g1_u_bar,
         g1_h_1,
         g1_h_2,
@@ -307,9 +308,7 @@ pub fn prove_multiunity<E: PairingEngine>(
         pi_3,
         pi_4,
         pi_5,
-    };
-
-    proof
+    }
 }
 
 // Verify that the prover knows vec_u_evals such that g1_u = g1^(sum_j u_j
@@ -339,23 +338,23 @@ pub fn verify_multiunity<E: PairingEngine>(
     // Compute [P]_1
     ////////////////////////////
 
-    let u_alpha_beta = pi_unity.v1 * &pp.lagrange_polynomials_n[0].evaluate(&beta) + &pi_unity.v2;
+    let u_alpha_beta = pi_unity.v1 * pp.lagrange_polynomials_n[0].evaluate(&beta) + pi_unity.v2;
 
     // g1_P = [ U^2 - (v3 + id(alpha)* pn(beta) )]_1
     let mut g1_P = pp.poly_ck.powers_of_g[0].mul(
-        u_alpha_beta * &u_alpha_beta
-            - &(pi_unity.v3
-                + &(pp.id_poly.evaluate(&alpha)
-                    * &pp.lagrange_polynomials_n[pp.n - 1].evaluate(&beta))),
+        u_alpha_beta * u_alpha_beta
+            - (pi_unity.v3
+                + (pp.id_poly.evaluate(&alpha)
+                    * pp.lagrange_polynomials_n[pp.n - 1].evaluate(&beta))),
     );
 
     // g1_P = g1_P  - h1 zVn(beta)
     let zVn = pp.domain_n.vanishing_polynomial();
-    g1_P = g1_P - &(pi_unity.g1_h_1.mul(zVn.evaluate(&beta)));
+    g1_P -= pi_unity.g1_h_1.mul(zVn.evaluate(&beta));
 
     // g1_P = g1_P  - h2_alpha zVm(alpha)
     let zVm = pp.domain_m.vanishing_polynomial();
-    g1_P = g1_P - &(pi_unity.g1_h_2_alpha.mul(zVm.evaluate(&alpha)));
+    g1_P -= pi_unity.g1_h_2_alpha.mul(zVm.evaluate(&alpha));
 
     /////////////////////////////
     // Check the KZG openings
@@ -364,14 +363,14 @@ pub fn verify_multiunity<E: PairingEngine>(
     let check1 = KZGCommit::<E>::verify_g1(
         &pp.poly_ck.powers_of_g,
         &pp.g2_powers,
-        &g1_u,
+        g1_u,
         None,
         &[alpha],
         &[pi_unity.v1],
         &pi_unity.pi_1,
     );
     let check2 = KZGCommit::partial_verify_g1(
-        &pp,
+        pp,
         &pi_unity.g1_u_bar,
         pp.domain_n.size(),
         &alpha,
@@ -379,7 +378,7 @@ pub fn verify_multiunity<E: PairingEngine>(
         &pi_unity.pi_2,
     );
     let check3 = KZGCommit::partial_verify_g1(
-        &pp,
+        pp,
         &pi_unity.g1_h_2,
         pp.domain_n.size(),
         &alpha,
@@ -391,7 +390,7 @@ pub fn verify_multiunity<E: PairingEngine>(
         &pp.g2_powers,
         &pi_unity.g1_u_bar_alpha,
         Some(&(pp.domain_n.size() - 1)),
-        &[E::Fr::one(), beta, beta * &pp.domain_n.element(1)],
+        &[E::Fr::one(), beta, beta * pp.domain_n.element(1)],
         &[E::Fr::zero(), pi_unity.v2, pi_unity.v3],
         &pi_unity.pi_4,
     );
@@ -405,7 +404,7 @@ pub fn verify_multiunity<E: PairingEngine>(
         &pi_unity.pi_5,
     );
 
-    return check1 && check2 && check3 && check4 && check5;
+    check1 && check2 && check3 && check4 && check5
 }
 
 #[cfg(test)]

@@ -133,11 +133,11 @@ impl<E: PairingEngine> TableInput<E> {
             cur_counter += G2_UNCOMPR_SIZE;
         }
 
-        return TableInput {
+        TableInput {
             c_poly: DensePolynomial { coeffs },
             c_com,
             openings,
-        };
+        }
     }
 }
 
@@ -177,17 +177,17 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     }
 
     // insert 0 into z_I so that we can pad when m is not a power of 2.
-    if positions_no_repeats.contains(&(0 as usize)) {
+    if positions_no_repeats.contains(&0usize) {
     } else {
-        positions_no_repeats.push(0 as usize);
+        positions_no_repeats.push(0usize);
     }
 
     // z_I(X)
     let mut z_I = DensePolynomial::from_coefficients_slice(&[r1]);
-    for j in 0..positions_no_repeats.len() {
+    for &pos in positions_no_repeats.iter() {
         z_I = &z_I
             * &DensePolynomial::from_coefficients_slice(&[
-                -srs.domain_N.element(positions_no_repeats[j]),
+                -srs.domain_N.element(pos),
                 E::Fr::one(),
             ]);
     }
@@ -267,13 +267,8 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     let mut transcript = CaulkTranscript::new();
 
     // let now = Instant::now();
-    let unity_proof = prove_multiunity(
-        &srs,
-        &mut transcript,
-        &u_com,
-        u_vals.clone(),
-        extra_blinder2,
-    );
+    let unity_proof =
+        prove_multiunity(srs, &mut transcript, &u_com, u_vals.clone(), extra_blinder2);
     // println!("Time to prove unity  {:?}",  now.elapsed());
 
     // quick test can be uncommented to check if unity proof verifies
@@ -578,7 +573,7 @@ pub fn verify_lookup_proof<E: PairingEngine>(
 
     assert!(pairing1 == pairing2, "failure on pairing check");
 
-    return true;
+    true
 }
 
 #[allow(non_snake_case)]
@@ -612,10 +607,9 @@ pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
     let blinder = E::Fr::rand(rng);
     let a_m = DensePolynomial::from_coefficients_slice(&[blinder]);
     let mut phi_poly = a_m.mul_by_vanishing_poly(pp.domain_m);
-    for j in 0..m {
-        phi_poly = &phi_poly
-            + &(&pp.lagrange_polynomials_m[j]
-                * c_poly.evaluate(&pp.domain_N.element(positions[j]))); // adding c(w^{i_j})*mu_j(X)
+    for (j, &pos) in positions.iter().enumerate().take(m) {
+        phi_poly += &(&pp.lagrange_polynomials_m[j] * c_poly.evaluate(&pp.domain_N.element(pos)));
+        // adding c(w^{i_j})*mu_j(X)
     }
 
     for j in m..pp.domain_m.size() {
@@ -627,7 +621,7 @@ pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
     let openings = KZGCommit::<E>::multiple_open::<E::G2Affine>(&c_poly, &pp.g2_powers, n);
     println!("Time to generate openings {:?}", now.elapsed());
 
-    return (
+    (
         LookupProverInput {
             c_poly,
             phi_poly,
@@ -635,7 +629,7 @@ pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
             openings,
         },
         pp,
-    );
+    )
 }
 
 pub fn get_poly_and_g2_openings<E: PairingEngine>(
@@ -656,7 +650,7 @@ pub fn get_poly_and_g2_openings<E: PairingEngine>(
             let now = Instant::now();
             let table = TableInput::load(&path);
             println!("Time to load openings = {:?}", now.elapsed());
-            return table;
+            table
         },
         Err(_) => {
             let rng = &mut ark_std::test_rng();
@@ -672,7 +666,7 @@ pub fn get_poly_and_g2_openings<E: PairingEngine>(
                 openings,
             };
             table.store(&path);
-            return table;
+            table
         },
     }
 }

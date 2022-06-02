@@ -36,7 +36,7 @@ impl<E: PairingEngine> KZGCommit<E> {
         // todo:MSM?
         let mut res = g2_powers[0].mul(poly[0]);
         for i in 1..poly.len() {
-            res = res + g2_powers[i].mul(poly[i])
+            res += g2_powers[i].mul(poly[i])
         }
         res.into_affine()
     }
@@ -55,18 +55,18 @@ impl<E: PairingEngine> KZGCommit<E> {
     // This is described in Section 4.6.2
     pub fn bipoly_commit(
         pp: &crate::multi::PublicParameters<E>,
-        poly: &Vec<DensePolynomial<E::Fr>>,
+        polys: &[DensePolynomial<E::Fr>],
         deg_x: usize,
     ) -> E::G1Affine {
         let mut poly_formatted = Vec::new();
 
-        for i in 0..poly.len() {
-            let temp = convert_to_bigints(&poly[i].coeffs);
-            for j in 0..poly[i].len() {
-                poly_formatted.push(temp[j]);
+        for poly in polys {
+            let temp = convert_to_bigints(&poly.coeffs);
+            for &t in temp.iter().take(poly.len()) {
+                poly_formatted.push(t);
             }
-            let temp = convert_to_bigints(&[E::Fr::zero()].to_vec())[0];
-            for _ in poly[i].len()..deg_x {
+            let temp = convert_to_bigints(&[E::Fr::zero()])[0];
+            for _ in poly.len()..deg_x {
                 poly_formatted.push(temp);
             }
         }
@@ -128,10 +128,10 @@ impl<E: PairingEngine> KZGCommit<E> {
     ) -> (E::G1Affine, E::G1Affine, DensePolynomial<E::Fr>) {
         let mut poly_partial_eval = DensePolynomial::from_coefficients_vec(vec![E::Fr::zero()]);
         let mut alpha = E::Fr::one();
-        for i in 0..poly.len() {
-            let pow_alpha = DensePolynomial::from_coefficients_vec(vec![alpha.clone()]);
-            poly_partial_eval = poly_partial_eval + &pow_alpha * &poly[i];
-            alpha = alpha * point;
+        for coeff in poly {
+            let pow_alpha = DensePolynomial::from_coefficients_vec(vec![alpha]);
+            poly_partial_eval += &(&pow_alpha * coeff);
+            alpha *= point;
         }
 
         let eval = VariableBaseMSM::multi_scalar_mul(
@@ -141,10 +141,10 @@ impl<E: PairingEngine> KZGCommit<E> {
         .into_affine();
 
         let mut witness_bipolynomial = Vec::new();
-        let poly_reverse: Vec<_> = poly.into_iter().rev().collect();
+        let poly_reverse: Vec<_> = poly.iter().rev().collect();
         witness_bipolynomial.push(poly_reverse[0].clone());
 
-        let alpha = DensePolynomial::from_coefficients_vec(vec![point.clone()]);
+        let alpha = DensePolynomial::from_coefficients_vec(vec![*point]);
         for i in 1..(poly_reverse.len() - 1) {
             witness_bipolynomial
                 .push(poly_reverse[i].clone() + &alpha * &witness_bipolynomial[i - 1]);
@@ -343,11 +343,10 @@ impl<E: PairingEngine> KZGCommit<E> {
             let w_ij = input_domain.element(i_j);
             // 1. Computing coefficient [1/prod]
             let mut prod = E::Fr::one();
-            for k in 0..m {
-                let i_k = positions[k];
-                let w_ik = input_domain.element(i_k);
+            for (k, &pos) in positions.iter().enumerate().take(m) {
+                let w_ik = input_domain.element(pos);
                 if k != j {
-                    prod = prod * (w_ij - w_ik);
+                    prod *= w_ij - w_ik;
                 }
             }
             // 2. Summation
@@ -355,7 +354,7 @@ impl<E: PairingEngine> KZGCommit<E> {
             if j == 0 {
                 res = q_add;
             } else {
-                res = res + q_add;
+                res += q_add;
             }
         }
         res.into_affine()

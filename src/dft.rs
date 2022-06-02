@@ -30,7 +30,7 @@ where
 
     // let now = Instant::now();
     // 1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d+2 [0]'s]
-    let mut x_ext: Vec<G> = powers.iter().take(dom_size - 1).rev().map(|&x| x).collect();
+    let mut x_ext: Vec<G> = powers.iter().take(dom_size - 1).rev().copied().collect();
     x_ext.resize(2 * dom_size, G::zero()); // filling 2d+2 neutral elements
 
     let y = group_dft::<F, G>(&x_ext, p + 1);
