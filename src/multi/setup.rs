@@ -7,10 +7,15 @@ use ark_poly::{
 };
 use ark_poly_commit::kzg10::*;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use std::{convert::TryInto, io::Write};
-// use crate::tools::{KzgBls12_381, UniPoly381};
 use ark_std::{cfg_into_iter, One, Zero};
-use std::{fs::File, io::Read, time::Instant};
+#[cfg(feature = "parallel")]
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use std::{
+    convert::TryInto,
+    fs::File,
+    io::{Read, Write},
+    time::Instant,
+};
 
 // structure of public parameters
 #[allow(non_snake_case)]

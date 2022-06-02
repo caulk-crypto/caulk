@@ -7,15 +7,13 @@
 
 use crate::{compute_h, group_dft, util::convert_to_bigints};
 use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
-use ark_ff::Field;
+use ark_ff::{Field, PrimeField};
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, GeneralEvaluationDomain, Polynomial,
     UVPolynomial,
 };
 use ark_poly_commit::kzg10::*;
 use ark_std::{end_timer, start_timer, One, Zero};
-#[cfg(feature = "parallel")]
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::marker::PhantomData;
 
 /////////////////////////////////////////////////////////////////////
@@ -28,17 +26,20 @@ pub struct KZGCommit<E: PairingEngine> {
 
 impl<E: PairingEngine> KZGCommit<E> {
     pub fn commit_g1(powers: &Powers<E>, polynomial: &DensePolynomial<E::Fr>) -> E::G1Affine {
+        let timer = start_timer!(|| "kzg g1 commit");
         let (com, _randomness) = KZG10::<E, _>::commit(powers, polynomial, None, None).unwrap();
+        end_timer!(timer);
         com.0
     }
 
     pub fn commit_g2(g2_powers: &[E::G2Affine], poly: &DensePolynomial<E::Fr>) -> E::G2Affine {
-        // todo:MSM?
-        let mut res = g2_powers[0].mul(poly[0]);
-        for i in 1..poly.len() {
-            res += g2_powers[i].mul(poly[i])
-        }
-        res.into_affine()
+        let timer = start_timer!(|| "kzg g2 commit");
+        let poly_coeffs: Vec<<E::Fr as PrimeField>::BigInt> =
+            poly.coeffs.iter().map(|&x| x.into_repr()).collect();
+        let res = VariableBaseMSM::multi_scalar_mul(g2_powers, &poly_coeffs).into_affine();
+
+        end_timer!(timer);
+        res
     }
 
     // Function to commit to f(X,Y)
@@ -58,16 +59,14 @@ impl<E: PairingEngine> KZGCommit<E> {
         polys: &[DensePolynomial<E::Fr>],
         deg_x: usize,
     ) -> E::G1Affine {
+        let timer = start_timer!(|| "kzg bipoly commit");
         let mut poly_formatted = Vec::new();
 
         for poly in polys {
             let temp = convert_to_bigints(&poly.coeffs);
-            for &t in temp.iter().take(poly.len()) {
-                poly_formatted.push(t);
-            }
-            let temp = convert_to_bigints(&[E::Fr::zero()])[0];
+            poly_formatted.extend_from_slice(&temp);
             for _ in poly.len()..deg_x {
-                poly_formatted.push(temp);
+                poly_formatted.push(E::Fr::zero().into_repr());
             }
         }
 
@@ -76,6 +75,7 @@ impl<E: PairingEngine> KZGCommit<E> {
             VariableBaseMSM::multi_scalar_mul(&pp.poly_ck.powers_of_g, poly_formatted.as_slice())
                 .into_affine();
 
+        end_timer!(timer);
         g1_poly
     }
 
@@ -122,13 +122,14 @@ impl<E: PairingEngine> KZGCommit<E> {
     // Algorithm described in Section 4.6.2, KZG for Bivariate Polynomials
     pub fn partial_open_g1(
         pp: &crate::multi::PublicParameters<E>,
-        poly: &[DensePolynomial<E::Fr>],
+        polys: &[DensePolynomial<E::Fr>],
         deg_x: usize,
         point: &E::Fr,
     ) -> (E::G1Affine, E::G1Affine, DensePolynomial<E::Fr>) {
+        let timer = start_timer!(|| "kzg partial open g1");
         let mut poly_partial_eval = DensePolynomial::from_coefficients_vec(vec![E::Fr::zero()]);
         let mut alpha = E::Fr::one();
-        for coeff in poly {
+        for coeff in polys {
             let pow_alpha = DensePolynomial::from_coefficients_vec(vec![alpha]);
             poly_partial_eval += &(&pow_alpha * coeff);
             alpha *= point;
@@ -141,19 +142,19 @@ impl<E: PairingEngine> KZGCommit<E> {
         .into_affine();
 
         let mut witness_bipolynomial = Vec::new();
-        let poly_reverse: Vec<_> = poly.iter().rev().collect();
+        let poly_reverse: Vec<_> = polys.iter().rev().collect();
         witness_bipolynomial.push(poly_reverse[0].clone());
 
         let alpha = DensePolynomial::from_coefficients_vec(vec![*point]);
         for i in 1..(poly_reverse.len() - 1) {
-            witness_bipolynomial
-                .push(poly_reverse[i].clone() + &alpha * &witness_bipolynomial[i - 1]);
+            witness_bipolynomial.push(poly_reverse[i] + &(&alpha * &witness_bipolynomial[i - 1]));
         }
 
         witness_bipolynomial.reverse();
 
         let proof = Self::bipoly_commit(pp, &witness_bipolynomial, deg_x);
 
+        end_timer!(timer);
         (eval, proof, poly_partial_eval)
     }
 
@@ -166,6 +167,7 @@ impl<E: PairingEngine> KZGCommit<E> {
         max_deg: Option<&usize>,
         points: &[E::Fr],
     ) -> (Vec<E::Fr>, E::G1Affine) {
+        let timer = start_timer!(|| "kzg batch open g1");
         let mut evals = Vec::new();
         let mut proofs = Vec::new();
         for p in points.iter() {
@@ -190,6 +192,7 @@ impl<E: PairingEngine> KZGCommit<E> {
             res += q_add;
         }
 
+        end_timer!(timer);
         (evals, res.into_affine())
     }
 
@@ -200,6 +203,7 @@ impl<E: PairingEngine> KZGCommit<E> {
         max_deg: Option<&usize>,
         point: &E::Fr,
     ) -> (E::Fr, E::G1Affine) {
+        let timer = start_timer!(|| "kzg open g1");
         let eval = poly.evaluate(point);
 
         let global_max_deg = poly_ck.powers_of_g.len();
@@ -219,13 +223,14 @@ impl<E: PairingEngine> KZGCommit<E> {
             convert_to_bigints(&witness_polynomial.coeffs).as_slice(),
         )
         .into_affine();
+
+        end_timer!(timer);
         (eval, proof)
     }
 
     // KZG.Verify( srs_KZG, F, deg, (alpha1, alpha2, ..., alphan), (v1, ..., vn), pi
     // ) Algorithm described in Section 4.6.1, Multiple Openings
     pub fn verify_g1(
-        // TODO: parameters struct
         // Verify that @c_com is a commitment to C(X) such that C(x)=z
         powers_of_g1: &[E::G1Affine], // generator of G1
         powers_of_g2: &[E::G2Affine], // [1]_2, [x]_2, [x^2]_2, ...
@@ -235,6 +240,8 @@ impl<E: PairingEngine> KZGCommit<E> {
         evals: &[E::Fr],              // evaluation
         pi: &E::G1Affine,             // proof
     ) -> bool {
+        let timer = start_timer!(|| "kzg verify g1");
+
         // Interpolation set
         // tau_i(X) = lagrange_tau[i] = polynomial equal to 0 at point[j] for j!= i and
         // 1  at points[i]
@@ -298,7 +305,9 @@ impl<E: PairingEngine> KZGCommit<E> {
             ),
         ];
 
-        E::product_of_pairings(pairing_inputs.iter()).is_one()
+        let res = E::product_of_pairings(pairing_inputs.iter()).is_one();
+        end_timer!(timer);
+        res
     }
 
     // KZG.Verify( srs_KZG, F, deg, alpha, F_alpha, pi )
@@ -313,17 +322,26 @@ impl<E: PairingEngine> KZGCommit<E> {
         partial_eval: &E::G1Affine,
         pi: &E::G1Affine, // proof
     ) -> bool {
-        // todo: pairing product
-        let pairing1 = E::pairing(
-            c_com.into_projective() - partial_eval.into_projective(),
-            srs.g2_powers[0],
-        );
-        let pairing2 = E::pairing(
-            *pi,
-            srs.g2_powers[deg_x].into_projective() - srs.g2_powers[0].mul(*point),
-        );
+        let timer = start_timer!(|| "kzg partial verify g1");
+        let pairing_inputs = vec![
+            (
+                E::G1Prepared::from(
+                    (partial_eval.into_projective() - c_com.into_projective()).into_affine(),
+                ),
+                E::G2Prepared::from(srs.g2_powers[0]),
+            ),
+            (
+                E::G1Prepared::from(*pi),
+                E::G2Prepared::from(
+                    (srs.g2_powers[deg_x].into_projective() - srs.g2_powers[0].mul(*point))
+                        .into_affine(),
+                ),
+            ),
+        ];
 
-        pairing1 == pairing2
+        let res = E::product_of_pairings(pairing_inputs.iter()).is_one();
+        end_timer!(timer);
+        res
     }
 
     // Algorithm for aggregating KZG proofs into a single proof
@@ -335,6 +353,8 @@ impl<E: PairingEngine> KZGCommit<E> {
         positions: &[usize],      // i_j
         input_domain: &GeneralEvaluationDomain<E::Fr>,
     ) -> E::G2Affine {
+        let timer = start_timer!(|| "kzg aggregate proof");
+
         let m = positions.len();
         let mut res = openings[0].into_projective(); // default value
 
@@ -357,7 +377,9 @@ impl<E: PairingEngine> KZGCommit<E> {
                 res += q_add;
             }
         }
-        res.into_affine()
+        let res = res.into_affine();
+        end_timer!(timer);
+        res
     }
 }
 
@@ -365,6 +387,8 @@ pub fn generate_lagrange_polynomials_subset<E: PairingEngine>(
     positions: &[usize],
     srs: &crate::multi::PublicParameters<E>,
 ) -> Vec<DensePolynomial<E::Fr>> {
+    let timer = start_timer!(|| "generate lagrange poly subset");
+
     let mut tau_polys = vec![];
     let m = positions.len();
     for j in 0..m {
@@ -373,15 +397,17 @@ pub fn generate_lagrange_polynomials_subset<E: PairingEngine>(
             if k != j {
                 // tau_j = prod_{k\neq j} (X-w^(i_k))/(w^(i_j)-w^(i_k))
                 let denum = srs.domain_N.element(positions[j]) - srs.domain_N.element(positions[k]);
+                let denum = E::Fr::one() / denum;
                 tau_j = &tau_j
                     * &DensePolynomial::from_coefficients_slice(&[
-                        -srs.domain_N.element(positions[k]) / denum, //-w^(i_k))/(w^(i_j)-w^(i_k)
-                        E::Fr::one() / denum,                        // 1//(w^(i_j)-w^(i_k))
+                        -srs.domain_N.element(positions[k]) * denum, //-w^(i_k))/(w^(i_j)-w^(i_k)
+                        denum,                                       // 1//(w^(i_j)-w^(i_k))
                     ]);
             }
         }
         tau_polys.push(tau_j.clone());
     }
+    end_timer!(timer);
     tau_polys
 }
 

@@ -5,7 +5,7 @@
 use crate::CaulkTranscript;
 use ark_ec::{AffineCurve, ProjectiveCurve};
 use ark_ff::PrimeField;
-use ark_std::{rand::RngCore, UniformRand};
+use ark_std::{end_timer, rand::RngCore, start_timer, UniformRand};
 use std::marker::PhantomData;
 
 // Parameters for pedersen commitment
@@ -35,6 +35,7 @@ impl<C: AffineCurve> PedersenCommit<C> {
         b: &C::ScalarField,
         rng: &mut R,
     ) -> PedersenProof<C> {
+        let timer = start_timer!(|| "prove pedersen commit");
         // R = g^s1 h^s2
         let s1 = C::ScalarField::rand(rng);
         let s2 = C::ScalarField::rand(rng);
@@ -43,12 +44,12 @@ impl<C: AffineCurve> PedersenCommit<C> {
 
         // c = Hash(cm, R)
         transcript.append_element(b"commitment", cm);
-        transcript.append_element(b"commitment", &g1_r);
+        transcript.append_element(b"g1_r", &g1_r);
         let c = transcript.get_and_append_challenge(b"get c");
 
         let t1 = s1 + c * a;
         let t2 = s2 + c * b;
-
+        end_timer!(timer);
         PedersenProof { g1_r, t1, t2 }
     }
 
@@ -59,12 +60,16 @@ impl<C: AffineCurve> PedersenCommit<C> {
         cm: &C,
         proof: &PedersenProof<C>,
     ) -> bool {
+        let timer = start_timer!(|| "verify pedersen commit");
         // compute c = Hash(cm, R)
         transcript.append_element(b"commitment", cm);
-        transcript.append_element(b"commitment", &proof.g1_r);
+        transcript.append_element(b"g1_r", &proof.g1_r);
         let c = transcript.get_and_append_challenge(b"get c");
 
         // check that R  g^(-t1) h^(-t2) cm^(c) = 1
-        proof.g1_r.into_projective() + cm.mul(c) == param.g.mul(proof.t1) + param.h.mul(proof.t2)
+        let res = proof.g1_r.into_projective() + cm.mul(c)
+            == param.g.mul(proof.t1) + param.h.mul(proof.t2);
+        end_timer!(timer);
+        res
     }
 }

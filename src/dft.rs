@@ -8,6 +8,7 @@ use ark_ff::PrimeField;
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, GeneralEvaluationDomain, UVPolynomial,
 };
+use ark_std::{end_timer, start_timer};
 use std::vec::Vec;
 
 // compute all pre-proofs using DFT
@@ -23,21 +24,22 @@ where
     F: PrimeField,
     G: ProjectiveCurve,
 {
+    let timer = start_timer!(|| "compute h");
     let mut coeffs = c_poly.coeffs().to_vec();
     let dom_size = 1 << p;
     let fpzero = F::zero();
     coeffs.resize(dom_size, fpzero);
 
-    // let now = Instant::now();
     // 1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d+2 [0]'s]
+    let step1_timer = start_timer!(|| "step 1");
     let mut x_ext: Vec<G> = powers.iter().take(dom_size - 1).rev().copied().collect();
     x_ext.resize(2 * dom_size, G::zero()); // filling 2d+2 neutral elements
-
     let y = group_dft::<F, G>(&x_ext, p + 1);
-    // println!("Step 1 computed in {:?}", now.elapsed());
+    end_timer!(step1_timer);
 
     // 2. c_ext = [c_d, d zeroes, c_d,c_{0},c_1,...,c_{d-2},c_{d-1}]
-    // let now = Instant::now();
+    let step2_timer = start_timer!(|| "step 2");
+
     let mut c_ext = vec![coeffs[coeffs.len() - 1]];
     c_ext.resize(dom_size, fpzero);
     c_ext.push(coeffs[coeffs.len() - 1]);
@@ -46,23 +48,23 @@ where
     }
     assert_eq!(c_ext.len(), 2 * dom_size);
     let v = field_dft::<F>(&c_ext, p + 1);
-    // println!("Step 2 computed in {:?}", now.elapsed());
+    end_timer!(step2_timer);
 
     // 3. u = y o v
-
-    // let now = Instant::now();
+    let step3_timer = start_timer!(|| "step 3");
     let u: Vec<_> = y
         .into_iter()
         .zip(v.into_iter())
         .map(|(a, b)| a.mul(b.into_repr()))
         .collect();
-    //    println!("Step 3 computed in {:?}", now.elapsed());
+    end_timer!(step3_timer);
 
     // 4. h_ext = idft_{2d+2}(u)
-    // let now = Instant::now();
+    let step4_timer = start_timer!(|| "step 4");
     let h_ext = group_inv_dft::<F, G>(&u, p + 1);
-    // println!("Step 4 computed in {:?}", now.elapsed());
+    end_timer!(step4_timer);
 
+    end_timer!(timer);
     h_ext[0..dom_size].to_vec()
 }
 
@@ -75,6 +77,7 @@ where
     G: ProjectiveCurve,
 {
     let dom_size = 1 << p;
+    let timer = start_timer!(|| format!("size {} group dft", dom_size));
     assert_eq!(h.len(), dom_size); // we do not support inputs of size not power of 2
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
@@ -96,6 +99,7 @@ where
         m *= 2;
         xvec = xt;
     }
+    end_timer!(timer);
     xvec
 }
 
@@ -104,6 +108,7 @@ where
 // 0<= i< dom_size=2^p
 pub fn field_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
     let dom_size = 1 << p;
+    let timer = start_timer!(|| format!("size {} field dft", dom_size));
     assert_eq!(h.len(), dom_size); // we do not support inputs of size not power of 2
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
@@ -125,6 +130,7 @@ pub fn field_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
         m *= 2;
         xvec = xt;
     }
+    end_timer!(timer);
     xvec
 }
 
@@ -137,6 +143,7 @@ where
     G: ProjectiveCurve,
 {
     let dom_size = 1 << p;
+    let timer = start_timer!(|| format!("size {} group inverse dft", dom_size));
     assert_eq!(h.len(), dom_size); // we do not support inputs of size not power of 2
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
@@ -164,7 +171,10 @@ where
 
     let domain_inverse = dom_fr.inverse().unwrap().into_repr();
 
-    xvec.iter().map(|x| x.mul(domain_inverse)).collect()
+    let res = xvec.iter().map(|x| x.mul(domain_inverse)).collect();
+
+    end_timer!(timer);
+    res
 }
 
 // compute idft of size @dom_size over vector of G1 elements
@@ -172,6 +182,7 @@ where
 // h_{dom_size-1}w^{-(dom_size-1)i})/dom_size for 0<= i< dom_size=2^p
 pub fn field_inv_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
     let dom_size = 1 << p;
+    let timer = start_timer!(|| format!("size {} field inverse dft", dom_size));
     assert_eq!(h.len(), dom_size); // we do not support inputs of size not power of 2
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
@@ -199,8 +210,10 @@ pub fn field_inv_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
     }
 
     let domain_inverse = dom_fr.inverse().unwrap();
+    let res = xvec.iter().map(|&x| x * domain_inverse).collect();
 
-    xvec.iter().map(|&x| x * domain_inverse).collect()
+    end_timer!(timer);
+    res
 }
 
 #[cfg(test)]

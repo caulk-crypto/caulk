@@ -2,6 +2,8 @@ use ark_ec::PairingEngine;
 use ark_ff::PrimeField;
 use ark_poly::UVPolynomial;
 use ark_poly_commit::kzg10::*;
+#[cfg(feature = "parallel")]
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 // Reduces full srs down to smaller srs for smaller polynomials
 // Copied from arkworks library (where same function is private)

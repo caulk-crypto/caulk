@@ -13,6 +13,8 @@ use ark_poly::{
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::{cfg_into_iter, rand::RngCore, One, UniformRand, Zero};
+#[cfg(feature = "parallel")]
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 pub use setup::PublicParameters;
 use std::{
     convert::TryInto,
@@ -727,7 +729,7 @@ mod tests {
         let mut rng = ark_std::test_rng();
 
         const MIN_LOG_N: usize = 7;
-        const MAX_LOG_N: usize = 15;
+        const MAX_LOG_N: usize = 9;
         const EPS: usize = 1;
         const MIN_LOG_M: usize = 2;
         const MAX_LOG_M: usize = 5;

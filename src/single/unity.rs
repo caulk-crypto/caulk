@@ -10,7 +10,7 @@ use ark_poly::{
     GeneralEvaluationDomain, Polynomial, UVPolynomial,
 };
 use ark_poly_commit::kzg10::*;
-use ark_std::{cfg_into_iter, rand::RngCore, One, UniformRand, Zero};
+use ark_std::{cfg_into_iter, end_timer, rand::RngCore, start_timer, One, UniformRand, Zero};
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -91,6 +91,7 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     b: &E::Fr,
     rng: &mut R,
 ) -> CaulkProofUnity<E> {
+    let timer = start_timer!(|| "single unity prove");
     // a_poly = a X - b
     let a_poly = DensePolynomial::from_coefficients_slice(&[-*b, *a]);
 
@@ -247,34 +248,33 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
     let mut p_alpha_poly = &pz_alpha * &h_hat_poly;
 
     // p_alpha(X) = p_alpha(X) + ( f(X) - z(X) )(rho1(alpha) + rho2(alpha))
-    p_alpha_poly = &p_alpha_poly + &(&(&f_poly - &a_poly) * &prho1_add_2);
+    p_alpha_poly += &(&(&f_poly - &a_poly) * &prho1_add_2);
 
     // p_alpha(X) = p_alpha(X) + ( (1-sigma) f(X) - v2 + v1 ) rho3(alpha)
-    p_alpha_poly = &p_alpha_poly
-        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(E::Fr::one() - sigma)])
-            * &f_poly)
+    p_alpha_poly +=
+        &(&(&(&(&DensePolynomial::from_coefficients_slice(&[(E::Fr::one() - sigma)]) * &f_poly)
             - &pv2)
             + &pv1)
             * &prho3);
 
     // p_alpha(X) = p_alpha(X) + ( f(X) + v2 - sigma v1 ) rho4(alpha)
-    p_alpha_poly = &p_alpha_poly
-        + &(&(&(&(&DensePolynomial::from_coefficients_slice(&[-sigma]) * &pv1) + &pv2) + &f_poly)
-            * &prho4);
+    p_alpha_poly += &(&(&(&(&DensePolynomial::from_coefficients_slice(&[-sigma]) * &pv1) + &pv2)
+        + &f_poly)
+        * &prho4);
 
     // p_alpha(X) = p_alpha(X) + ( v1 f(X) - v2  ) rho5(alpha)
-    p_alpha_poly = &p_alpha_poly + &(&(&(&f_poly * &pv1) - &pv2) * &prho5);
+    p_alpha_poly += &(&(&(&f_poly * &pv1) - &pv2) * &prho5);
 
     // p_alpha(X) = p_alpha(X) + (  f(X) - v1^2  ) prod_(i not in [5, .. , logN +
     // 4]) (alpha - sigma^i)
-    p_alpha_poly = &p_alpha_poly + &(&(&f_poly - &(&pv1 * &pv1)) * &ppolyprod);
+    p_alpha_poly += &(&(&f_poly - &(&pv1 * &pv1)) * &ppolyprod);
 
     // Differing slightly from paper
     // Paper uses p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(n)(alpha) assuming that
     // logN  = n - 6 We use p_alpha(X) = p_alpha(X) + ( v1 - 1 ) rho_(logN +
     // 6)(alpha) to allow for any value of logN
-    p_alpha_poly = &p_alpha_poly
-        + &(&(&pv1 - &(DensePolynomial::from_coefficients_slice(&[E::Fr::one()]))) * &prhologN6);
+    p_alpha_poly +=
+        &(&(&pv1 - &(DensePolynomial::from_coefficients_slice(&[E::Fr::one()]))) * &prhologN6);
 
     ////////////////////////////
     // Compute opening proofs
@@ -293,6 +293,7 @@ pub fn caulk_single_unity_prove<E: PairingEngine, R: RngCore>(
         "p_alpha(X) does not equal 0 at alpha"
     );
 
+    end_timer!(timer);
     CaulkProofUnity {
         g1_F,
         g1_H,
@@ -311,6 +312,8 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     g2_z: &E::G2Affine,
     proof: &CaulkProofUnity<E>,
 ) -> bool {
+    let timer = start_timer!(|| "single unity verify");
+
     // g2_z must not be the identity
     assert!(!g2_z.is_zero(), "g2_z is the identity");
 
@@ -330,6 +333,20 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     // alpha1 = sigma^(-1) alpha and alpha2 = sigma^(-2) alpha
     let alpha1: E::Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 1);
     let alpha2: E::Fr = alpha * vk.domain_Vn.element(vk.domain_Vn.size() - 2);
+
+    ///////////////////////////////
+    // KZG opening check
+    ///////////////////////////////
+
+    let check1 = KZGCommit::<E>::verify_g1(
+        [vk.g1, vk.g1_x].as_ref(),
+        &vk.powers_of_g2,
+        &proof.g1_F,
+        None,
+        [alpha1, alpha2].as_ref(),
+        [proof.v1, proof.v2].as_ref(),
+        &proof.pi1,
+    );
 
     ///////////////////////////////
     // Compute P = commitment to p_alpha(X)
@@ -361,6 +378,10 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     // pprod = prod_(i not in  [5,..,logN+4]) (alpha - w^i)
     let pprod = vk.poly_prod.evaluate(&alpha);
 
+    ///////////////////////////////
+    // Pairing checks
+    ///////////////////////////////
+
     // P = H^(-z(alpha)) * F^(rho0(alpha) + L_1(alpha) + (1 - w)L_2(alpha) +
     // L_3(alpha) + v1 L_4(alpha)                      + prod_(i not in
     // [5,..,logN+4]) (alpha - w^i))
@@ -376,24 +397,6 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
                 + (v1 - E::Fr::one()) * rhologN5
                 - v1 * v1 * pprod,
         );
-
-    ///////////////////////////////
-    // Pairing checks
-    ///////////////////////////////
-
-    ///////////////////////////////
-    // KZG opening check
-    ///////////////////////////////
-
-    let check1 = KZGCommit::<E>::verify_g1(
-        [vk.g1, vk.g1_x].as_ref(),
-        &vk.powers_of_g2,
-        &proof.g1_F,
-        None,
-        [alpha1, alpha2].as_ref(),
-        [proof.v1, proof.v2].as_ref(),
-        &proof.pi1,
-    );
 
     let g1_q = proof.pi2;
 
@@ -413,6 +416,6 @@ pub fn caulk_single_unity_verify<E: PairingEngine>(
     ];
 
     let check2 = E::product_of_pairings(&eq1).is_one();
-
+    end_timer!(timer);
     check1 && check2
 }
