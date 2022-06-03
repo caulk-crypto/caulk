@@ -1,8 +1,8 @@
 [package]
-name = "caulk_multi_lookup"
-authors = ["mmaller <mary.maller@ethereum.org>", "khovratovich <khovratovich@gmail.com>"]
+name = "caulk"
 version = "0.1.0"
-edition = "2021"
+authors = ["mmaller <mary.maller@ethereum.org>"]
+edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -12,20 +12,30 @@ ark-ec = { version = "^0.3.0", default-features = false }
 ark-serialize = { version = "^0.3.0", default-features = false, features = [ "derive" ] }
 ark-poly = { version = "^0.3.0", default-features = false }
 ark-std = { version = "^0.3.0", default-features = false }
-ark-relations = { version = "^0.3.0", default-features = false }
-ark-crypto-primitives = { version = "^0.3.0", default-features = false }
 ark-r1cs-std = { version = "^0.3.0", default-features = false, optional = true }
 ark-bls12-381 = { version = "^0.3.0", features = [ "std" ] }
+ark-bls12-377 = { version = "^0.3.0", features = [ "std" ] }
 ark-poly-commit = { version = "^0.3.0", default-features = false }
-ark-marlin = { version = "^0.3.0", default-features = false }
 
 tracing = { version = "0.1", default-features = false, features = [ "attributes" ], optional = true }
 derivative = { version = "2.0", features = ["use_core"], optional = true}
-rand = "0.7.3"
-rand_chacha = { version = "0.2.1" }
+rand = "0.8.5"
+rand_chacha = { version = "0.3.1" }
 thiserror = "1.0.19"
-blake2s_simd = "0.5.10"
+blake2s_simd = "1.0.0"
 
+rayon = { version = "1.5.2", default-features = false, optional = true }
+merlin = { version = "3.0.0" }
 
 [features]
 asm = [ "ark-ff/asm" ]
+parallel = [ 
+    "rayon",
+    "ark-std/parallel", 
+    "ark-ff/parallel",  
+    "ark-poly/parallel" 
+    ]
+print-trace = [
+    "ark-std/print-trace"
+]
+
