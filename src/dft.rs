@@ -148,7 +148,6 @@ where
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
     let mut m: usize = 1;
-    let mut dom_fr = F::one();
     // Stockham FFT
     let mut xvec = h.to_vec();
     for _ in 0..p {
@@ -165,12 +164,10 @@ where
         }
         l /= 2;
         m *= 2;
-        dom_fr = dom_fr + dom_fr;
         xvec = xt;
     }
 
-    let domain_inverse = dom_fr.inverse().unwrap().into_repr();
-
+    let domain_inverse = F::from(1u64 << p).inverse().unwrap().into_repr();
     let res = xvec.iter().map(|x| x.mul(domain_inverse)).collect();
 
     end_timer!(timer);
@@ -187,7 +184,6 @@ pub fn field_inv_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
     let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(dom_size).unwrap();
     let mut l = dom_size / 2;
     let mut m: usize = 1;
-    let mut dom_fr = F::one();
     // Stockham FFT
     let mut xvec = h.to_vec();
     for _ in 0..p {
@@ -205,11 +201,10 @@ pub fn field_inv_dft<F: PrimeField>(h: &[F], p: usize) -> Vec<F> {
         }
         l /= 2;
         m *= 2;
-        dom_fr = dom_fr + dom_fr;
         xvec = xt;
     }
 
-    let domain_inverse = dom_fr.inverse().unwrap();
+    let domain_inverse = F::from(1u64 << p).inverse().unwrap();
     let res = xvec.iter().map(|&x| x * domain_inverse).collect();
 
     end_timer!(timer);

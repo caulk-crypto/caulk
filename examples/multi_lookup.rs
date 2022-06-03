@@ -121,7 +121,7 @@ fn main() {
 
     let now = Instant::now();
     for _ in 0..number_of_openings {
-        verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp);
+        verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp, &mut rng);
     }
     println!(
         "Time to verify {} times {} multi-openings of table size {:?} = {:?} ",
@@ -132,7 +132,7 @@ fn main() {
     );
 
     assert!(
-        verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp),
+        verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp, &mut rng),
         "Result does not verify"
     );
 }

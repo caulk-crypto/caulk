@@ -241,6 +241,47 @@ impl<E: PairingEngine> KZGCommit<E> {
         pi: &E::G1Affine,             // proof
     ) -> bool {
         let timer = start_timer!(|| "kzg verify g1");
+        let pairing_inputs = Self::verify_g1_defer_pairing(
+            powers_of_g1,
+            powers_of_g2,
+            c_com,
+            max_deg,
+            points,
+            evals,
+            pi,
+        );
+
+        let pairing_timer = start_timer!(|| "pairing product");
+        let prepared_pairing_inputs = vec![
+            (
+                E::G1Prepared::from(pairing_inputs[0].0.into_affine()),
+                E::G2Prepared::from(pairing_inputs[0].1.into_affine()),
+            ),
+            (
+                E::G1Prepared::from(pairing_inputs[1].0.into_affine()),
+                E::G2Prepared::from(pairing_inputs[1].1.into_affine()),
+            ),
+        ];
+        let res = E::product_of_pairings(prepared_pairing_inputs.iter()).is_one();
+
+        end_timer!(pairing_timer);
+        end_timer!(timer);
+        res
+    }
+
+    // KZG.Verify( srs_KZG, F, deg, (alpha1, alpha2, ..., alphan), (v1, ..., vn), pi
+    // ) Algorithm described in Section 4.6.1, Multiple Openings
+    pub fn verify_g1_defer_pairing(
+        // Verify that @c_com is a commitment to C(X) such that C(x)=z
+        powers_of_g1: &[E::G1Affine], // generator of G1
+        powers_of_g2: &[E::G2Affine], // [1]_2, [x]_2, [x^2]_2, ...
+        c_com: &E::G1Affine,          // commitment
+        max_deg: Option<&usize>,      // max degree
+        points: &[E::Fr],             // x such that eval = C(x)
+        evals: &[E::Fr],              // evaluation
+        pi: &E::G1Affine,             // proof
+    ) -> Vec<(E::G1Projective, E::G2Projective)> {
+        let timer = start_timer!(|| "kzg verify g1 (deferring pairing)");
 
         // Interpolation set
         // tau_i(X) = lagrange_tau[i] = polynomial equal to 0 at point[j] for j!= i and
@@ -294,18 +335,14 @@ impl<E: PairingEngine> KZGCommit<E> {
             d += max_deg.unwrap();
         }
 
-        let pairing_inputs = vec![
+        let res = vec![
             (
-                E::G1Prepared::from((g1_tau - c_com.into_projective()).into_affine()),
-                E::G2Prepared::from(powers_of_g2[global_max_deg - d]),
+                g1_tau - c_com.into_projective(),
+                powers_of_g2[global_max_deg - d].into_projective(),
             ),
-            (
-                E::G1Prepared::from(*pi),
-                E::G2Prepared::from(g2_z_tau.into_affine()),
-            ),
+            (pi.into_projective(), g2_z_tau),
         ];
 
-        let res = E::product_of_pairings(pairing_inputs.iter()).is_one();
         end_timer!(timer);
         res
     }
@@ -323,23 +360,50 @@ impl<E: PairingEngine> KZGCommit<E> {
         pi: &E::G1Affine, // proof
     ) -> bool {
         let timer = start_timer!(|| "kzg partial verify g1");
-        let pairing_inputs = vec![
+        let pairing_inputs =
+            Self::partial_verify_g1_defer_pairing(srs, c_com, deg_x, point, partial_eval, pi);
+        let pairing_timer = start_timer!(|| "pairing product");
+        let prepared_pairing_inputs = vec![
             (
-                E::G1Prepared::from(
-                    (partial_eval.into_projective() - c_com.into_projective()).into_affine(),
-                ),
-                E::G2Prepared::from(srs.g2_powers[0]),
+                E::G1Prepared::from(pairing_inputs[0].0.into_affine()),
+                E::G2Prepared::from(pairing_inputs[0].1.into_affine()),
             ),
             (
-                E::G1Prepared::from(*pi),
-                E::G2Prepared::from(
-                    (srs.g2_powers[deg_x].into_projective() - srs.g2_powers[0].mul(*point))
-                        .into_affine(),
-                ),
+                E::G1Prepared::from(pairing_inputs[1].0.into_affine()),
+                E::G2Prepared::from(pairing_inputs[1].1.into_affine()),
             ),
         ];
 
-        let res = E::product_of_pairings(pairing_inputs.iter()).is_one();
+        let res = E::product_of_pairings(prepared_pairing_inputs.iter()).is_one();
+
+        end_timer!(pairing_timer);
+        end_timer!(timer);
+        res
+    }
+
+    // KZG.Verify( srs_KZG, F, deg, alpha, F_alpha, pi )
+    // Algorithm described in Section 4.6.2, KZG for Bivariate Polynomials
+    // Be very careful here.  Verification is only valid if it is paired with a
+    // degree check.
+    pub fn partial_verify_g1_defer_pairing(
+        srs: &crate::multi::PublicParameters<E>,
+        c_com: &E::G1Affine, // commitment
+        deg_x: usize,
+        point: &E::Fr,
+        partial_eval: &E::G1Affine,
+        pi: &E::G1Affine, // proof
+    ) -> Vec<(E::G1Projective, E::G2Projective)> {
+        let timer = start_timer!(|| "kzg partial verify g1 (deferring pairing)");
+        let res = vec![
+            (
+                partial_eval.into_projective() - c_com.into_projective(),
+                srs.g2_powers[0].into_projective(),
+            ),
+            (
+                pi.into_projective(),
+                srs.g2_powers[deg_x].into_projective() - srs.g2_powers[0].mul(*point),
+            ),
+        ];
         end_timer!(timer);
         res
     }

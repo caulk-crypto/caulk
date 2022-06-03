@@ -12,7 +12,7 @@ use ark_poly::{
     GeneralEvaluationDomain, Polynomial, UVPolynomial,
 };
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{cfg_into_iter, rand::RngCore, One, UniformRand, Zero};
+use ark_std::{cfg_into_iter, end_timer, rand::RngCore, start_timer, One, UniformRand, Zero};
 #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 pub use setup::PublicParameters;
@@ -20,10 +20,11 @@ use std::{
     convert::TryInto,
     fs::File,
     io::{Read, Write},
+    ops::MulAssign,
     time::Instant,
     vec::Vec,
 };
-use unity::{prove_multiunity, verify_multiunity, ProofMultiUnity};
+use unity::{prove_multiunity, verify_multiunity_defer_pairing, ProofMultiUnity};
 
 pub struct LookupInstance<C: AffineCurve> {
     pub c_com: C,   // polynomial C(X) that represents a table
@@ -150,6 +151,8 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     srs: &PublicParameters<E>,
     rng: &mut R,
 ) -> (LookupProof<E>, ProofMultiUnity<E>) {
+    let timer = start_timer!(|| "lookup proof generation");
+
     let m = input.positions.len();
 
     ///////////////////////////////////////////////////////////////////
@@ -269,8 +272,7 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     let mut transcript = CaulkTranscript::new();
 
     // let now = Instant::now();
-    let unity_proof =
-        prove_multiunity(srs, &mut transcript, &u_com, u_vals.clone(), extra_blinder2);
+    let unity_proof = prove_multiunity(srs, &mut transcript, &u_com, &u_vals, extra_blinder2);
     // println!("Time to prove unity  {:?}",  now.elapsed());
 
     // quick test can be uncommented to check if unity proof verifies
@@ -437,18 +439,20 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
         pi2,
         pi3,
     };
-
+    end_timer!(timer);
     (proof, unity_proof)
 }
 
 #[allow(non_snake_case)]
-pub fn verify_lookup_proof<E: PairingEngine>(
+pub fn verify_lookup_proof<E: PairingEngine, R: RngCore>(
     c_com: &E::G1Affine,
     phi_com: &E::G1Affine,
     proof: &LookupProof<E>,
     unity_proof: &ProofMultiUnity<E>,
     srs: &PublicParameters<E>,
+    rng: &mut R,
 ) -> bool {
+    let timer = start_timer!(|| "lookup proof verification");
     ///////////////////////////////////////////////////////////////////
     // 1. check unity
     ///////////////////////////////////////////////////////////////////
@@ -456,8 +460,8 @@ pub fn verify_lookup_proof<E: PairingEngine>(
     // hash_input initialised to zero
     let mut transcript = CaulkTranscript::new();
 
-    let unity_check = verify_multiunity(srs, &mut transcript, &proof.u_com, unity_proof);
-    assert!(unity_check, "failure on unity");
+    let unity_check =
+        verify_multiunity_defer_pairing(srs, &mut transcript, &proof.u_com, unity_proof);
 
     ///////////////////////////////////////////////////////////////////
     // 2. Hash outputs to get chi
@@ -498,7 +502,7 @@ pub fn verify_lookup_proof<E: PairingEngine>(
     ///////////////////////////////////////////////////////////////////
 
     // KZG.Verify(srs_KZG, [u]_1, deg = bot, alpha, v1, pi1)
-    let check1 = KZGCommit::<E>::verify_g1(
+    let check1 = KZGCommit::<E>::verify_g1_defer_pairing(
         &srs.poly_ck.powers_of_g,
         &srs.g2_powers,
         &proof.u_com,
@@ -507,8 +511,6 @@ pub fn verify_lookup_proof<E: PairingEngine>(
         &[proof.v1],
         &proof.pi1,
     );
-
-    assert!(check1, "failure on pi_1 check");
 
     ///////////////////////////////////////////////////////////////////
     // 5. Check pi_2
@@ -521,7 +523,7 @@ pub fn verify_lookup_proof<E: PairingEngine>(
     let p1_com = (proof.z_I_com.into_projective() + proof.C_I_com.mul(chi)).into_affine();
 
     // KZG.Verify(srs_KZG, [P1]_1, deg = bot, v1_id, v2, pi2)
-    let check2 = KZGCommit::<E>::verify_g1(
+    let check2 = KZGCommit::<E>::verify_g1_defer_pairing(
         &srs.poly_ck.powers_of_g,
         &srs.g2_powers,
         &p1_com,
@@ -530,7 +532,6 @@ pub fn verify_lookup_proof<E: PairingEngine>(
         &[proof.v2],
         &proof.pi2,
     );
-    assert!(check2, "failure on pi_2 check");
 
     ///////////////////////////////////////////////////////////////////
     // 6. Check pi_3
@@ -549,7 +550,7 @@ pub fn verify_lookup_proof<E: PairingEngine>(
     .into_affine();
 
     // KZG.Verify(srs_KZG, [P2]_1, deg = bot, alpha, 0, pi3)
-    let check3 = KZGCommit::<E>::verify_g1(
+    let check3 = KZGCommit::<E>::verify_g1_defer_pairing(
         &srs.poly_ck.powers_of_g,
         &srs.g2_powers,
         &p2_com,
@@ -558,24 +559,58 @@ pub fn verify_lookup_proof<E: PairingEngine>(
         &[E::Fr::zero()],
         &proof.pi3,
     );
-    assert!(check3, "failure on check 3");
 
     ///////////////////////////////////////////////////////////////////
-    // 7. Check final pairing
+    // 7. prepare final pairing
     ///////////////////////////////////////////////////////////////////
 
     // pairing1 = e([C]_1 - [C_I]_1, [1]_2)
-    let pairing1 = E::pairing(
-        (c_com.into_projective() - proof.C_I_com.into_projective()).into_affine(),
-        srs.g2_powers[0],
-    );
+    let final_pairing = vec![
+        (
+            proof.C_I_com.into_projective() - c_com.into_projective(),
+            srs.g2_powers[0].into_projective(),
+        ),
+        (
+            proof.z_I_com.into_projective(),
+            proof.H1_com.into_projective(),
+        ),
+    ];
 
-    // pairing2 = e([z_I]_1, [H_1]_2)
-    let pairing2 = E::pairing(proof.z_I_com, proof.H1_com);
+    ///////////////////////////////////////////////////////////////////
+    // 7. Check pairing products
+    ///////////////////////////////////////////////////////////////////
+    let pairing_timer = start_timer!(|| "pairing product");
+    let mut pairing_inputs: Vec<(E::G1Projective, E::G2Projective)> = [
+        unity_check.as_slice(),
+        check1.as_slice(),
+        check2.as_slice(),
+        check3.as_slice(),
+        final_pairing.as_slice(),
+    ]
+    .concat();
 
-    assert!(pairing1 == pairing2, "failure on pairing check");
+    let mut zeta = E::Fr::rand(rng);
+    let mut prepared_pairing_inputs = vec![];
+    for i in 0..pairing_inputs.len() / 2 {
+        if i != 0 {
+            pairing_inputs[i * 2].0.mul_assign(zeta);
+            pairing_inputs[i * 2 + 1].0.mul_assign(zeta);
+        }
+        zeta.square_in_place();
+        prepared_pairing_inputs.push((
+            E::G1Prepared::from(pairing_inputs[i * 2].0.into_affine()),
+            E::G2Prepared::from(pairing_inputs[i * 2].1.into_affine()),
+        ));
+        prepared_pairing_inputs.push((
+            E::G1Prepared::from(pairing_inputs[i * 2 + 1].0.into_affine()),
+            E::G2Prepared::from(pairing_inputs[i * 2 + 1].1.into_affine()),
+        ));
+    }
+    let res = E::product_of_pairings(prepared_pairing_inputs.iter()).is_one();
 
-    true
+    end_timer!(pairing_timer);
+    end_timer!(timer);
+    res
 }
 
 #[allow(non_snake_case)]
@@ -804,7 +839,14 @@ mod tests {
                     compute_lookup_proof::<E, _>(&lookup_instance, &prover_input, &pp, &mut rng);
                 println!("Time to generate proof for = {:?}", now.elapsed());
                 let now = Instant::now();
-                let res = verify_lookup_proof(&table.c_com, &phi_com, &proof, &unity_proof, &pp);
+                let res = verify_lookup_proof(
+                    &table.c_com,
+                    &phi_com,
+                    &proof,
+                    &unity_proof,
+                    &pp,
+                    &mut rng,
+                );
                 println!("Time to verify proof for  = {:?}", now.elapsed());
                 assert!(res);
                 println!("Lookup test succeeded");
@@ -844,7 +886,7 @@ mod tests {
             now.elapsed()
         );
         let now = Instant::now();
-        let res = verify_lookup_proof(&c_com, &phi_com, &proof, &unity_proof, &srs);
+        let res = verify_lookup_proof(&c_com, &phi_com, &proof, &unity_proof, &srs, &mut rng);
         println!(
             "Time to verify proof for n={:?} = {:?}",
             srs.n,
