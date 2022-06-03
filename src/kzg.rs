@@ -110,7 +110,9 @@ impl<E: PairingEngine> KZGCommit<E> {
         let q2 = group_dft::<E::Fr, G::Projective>(&h2, p);
         end_timer!(dft_timer);
 
+        let normalization_timer = start_timer!(|| "batch normalization");
         let res = G::Projective::batch_normalization_into_affine(q2.as_ref());
+        end_timer!(normalization_timer);
 
         end_timer!(timer);
         res

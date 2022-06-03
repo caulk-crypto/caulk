@@ -24,7 +24,9 @@ use std::{
     time::Instant,
     vec::Vec,
 };
-use unity::{prove_multiunity, verify_multiunity_defer_pairing, ProofMultiUnity};
+pub use unity::{
+    prove_multiunity, verify_multiunity, verify_multiunity_defer_pairing, ProofMultiUnity,
+};
 
 pub struct LookupInstance<C: AffineCurve> {
     pub c_com: C,   // polynomial C(X) that represents a table
@@ -158,7 +160,7 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     ///////////////////////////////////////////////////////////////////
     // 1. Blinders
     ///////////////////////////////////////////////////////////////////
-
+    let step_1_timer = start_timer!(|| "step 1");
     // provers blinders for zero-knowledge
     let r1 = E::Fr::rand(rng);
     let r2 = E::Fr::rand(rng);
@@ -167,11 +169,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     let r5 = E::Fr::rand(rng);
     let r6 = E::Fr::rand(rng);
     let r7 = E::Fr::rand(rng);
-
+    end_timer!(step_1_timer);
     ///////////////////////////////////////////////////////////////////
     // 2. Compute z_I(X) = r1 prod_{i in I} (X - w^i)
     ///////////////////////////////////////////////////////////////////
-
+    let step_2_timer = start_timer!(|| "step 2");
     // z_I includes each position only once.
     let mut positions_no_repeats = Vec::new();
     for i in 0..input.positions.len() {
@@ -196,11 +198,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
                 E::Fr::one(),
             ]);
     }
-
+    end_timer!(step_2_timer);
     ///////////////////////////////////////////////////////////////////
-    // 2. Compute C_I(X) = (r_2+r_3X + r4X^2)*Z_I(X) + sum_j c_j*tau_j(X)
+    // 3. Compute C_I(X) = (r_2+r_3X + r4X^2)*Z_I(X) + sum_j c_j*tau_j(X)
     ///////////////////////////////////////////////////////////////////
-
+    let step_3_timer = start_timer!(|| "step 3");
     let mut c_I_poly = DensePolynomial::from_coefficients_slice(&[E::Fr::zero()]);
 
     // tau_polys[i] = 1 at positions_no_repeats[i] and 0 at positions_no_repeats[j]
@@ -225,10 +227,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     // C_I(X) =  C_I(X) + z_I(X) * (r2 + r3 X + r4 X^2)
     c_I_poly = &c_I_poly + &(&z_I * &extra_blinder);
 
+    end_timer!(step_3_timer);
     ///////////////////////////////////////////////////////////////////
     // 4. Compute H1
     ///////////////////////////////////////////////////////////////////
-
+    let step_4_timer = start_timer!(|| "step 4");
     // Compute [Q(x)]_2 by aggregating kzg proofs such that
     // Q(X) = (  C(X) - sum_{i in I} c_{i+1} tau_i(X)  ) /  ( prod_{i in I} (X -
     // w^i) )
@@ -241,10 +244,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     // H1_com = [ r1^{-1} Q(x) ]_2 - blind_com
     let H1_com = (g2_Q.mul(r1.inverse().unwrap()) - blind_com.into_projective()).into_affine();
 
+    end_timer!(step_4_timer);
     ///////////////////////////////////////////////////////////////////
     // 5. Compute u(X) = sum_j w^{i_j} mu_j(X) + (r5 + r6 X + r7 X^2) z_{Vm}(X)
     ///////////////////////////////////////////////////////////////////
-
+    let step_5_timer = start_timer!(|| "step 5");
     // u(X) = sum_j w^{i_j} mu_j(X)
     let mut u_vals = vec![];
     for j in 0..m {
@@ -257,17 +261,20 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
         .interpolate()
         + &(extra_blinder2.mul_by_vanishing_poly(srs.domain_m));
 
+    end_timer!(step_5_timer);
     ///////////////////////////////////////////////////////////////////
     // 6. Commitments
     ///////////////////////////////////////////////////////////////////
+    let step_6_timer = start_timer!(|| "step 6");
     let z_I_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &z_I);
     let C_I_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &c_I_poly);
     let u_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &u_poly);
 
+    end_timer!(step_6_timer);
     ///////////////////////////////////////////////////////////////////
     // 7 Prepare unity proof
     ///////////////////////////////////////////////////////////////////
-
+    let step_7_timer = start_timer!(|| "step 7");
     // transcript initialised to zero
     let mut transcript = CaulkTranscript::new();
 
@@ -279,10 +286,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     // let unity_check = verify_multiunity( &srs, &mut Fr::zero(), u_com.0.clone(),
     // &unity_proof ); println!("unity_check = {}", unity_check);
 
+    end_timer!(step_7_timer);
     ///////////////////////////////////////////////////////////////////
     // 8. Hash outputs to get chi
     ///////////////////////////////////////////////////////////////////
-
+    let step_8_timer = start_timer!(|| "step 8");
     transcript.append_element(b"c_com", &instance.c_com);
     transcript.append_element(b"phi_com", &instance.phi_com);
     transcript.append_element(b"u_bar_alpha", &unity_proof.g1_u_bar_alpha);
@@ -304,10 +312,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
 
     let chi = transcript.get_and_append_challenge(b"chi");
 
+    end_timer!(step_8_timer);
     ///////////////////////////////////////////////////////////////////
     // 9. Compute z_I( u(X) )
     ///////////////////////////////////////////////////////////////////
-
+    let step_9_timer = start_timer!(|| "step 9");
     // Need a bigger domain to compute z_I(u(X)) over.
     // Has size O(m^2)
     let domain_m_sq: GeneralEvaluationDomain<E::Fr> =
@@ -331,10 +340,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
         .collect();
     let z_I_u_poly = Evaluations::from_vec_and_domain(evals, domain_m_sq).interpolate();
 
+    end_timer!(step_9_timer);
     ///////////////////////////////////////////////////////////////////
     // 10. Compute C_I(u(X))-phi(X)
     ///////////////////////////////////////////////////////////////////
-
+    let step_10_timer = start_timer!(|| "step 10");
     // Compute C_I( u(X) )
     // Computing C_I(u(X)) is done naively and could be faster.  Currently this is
     // not a bottleneck
@@ -353,10 +363,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     let c_I_u_poly =
         &Evaluations::from_vec_and_domain(evals, domain_m_sq).interpolate() - &input.phi_poly;
 
+    end_timer!(step_10_timer);
     ///////////////////////////////////////////////////////////////////
     // 11. Compute H2
     ///////////////////////////////////////////////////////////////////
-
+    let step_11_timer = start_timer!(|| "step 11");
     // temp_poly(X) = z_I(u(X)) + chi [ C_I(u(X)) - phi(X) ]
     let temp_poly = &z_I_u_poly + &(&c_I_u_poly * chi);
 
@@ -367,32 +378,38 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
         "H_2(X) doesn't divide"
     );
 
+    end_timer!(step_11_timer);
     ///////////////////////////////////////////////////////////////////
     // 12. Compute commitments to H2
     ///////////////////////////////////////////////////////////////////
-    // let now = Instant::now();
+    let step_12_timer = start_timer!(|| "step 12");
     let H2_com = KZGCommit::<E>::commit_g1(&srs.poly_ck, &H2_poly);
     // println!("Time to commit to H2  {:?}",  now.elapsed());
 
+    end_timer!(step_12_timer);
     ///////////////////////////////////////////////////////////////////
     // 13. Hash outputs to get alpha
     ///////////////////////////////////////////////////////////////////
+    let step_13_timer = start_timer!(|| "step 13");
     transcript.append_element(b"h2", &H2_com);
     let alpha = transcript.get_and_append_challenge(b"alpha");
 
     // last hash so don't need to update hash_input
     // hash_input = alpha.clone();
 
+    end_timer!(step_13_timer);
     ///////////////////////////////////////////////////////////////////
     // 14. Open u at alpha, get v1
     ///////////////////////////////////////////////////////////////////
+    let step_14_timer = start_timer!(|| "step 14");
     let (evals1, pi1) = KZGCommit::<E>::open_g1_batch(&srs.poly_ck, &u_poly, None, &[alpha]);
     let v1 = evals1[0];
 
+    end_timer!(step_14_timer);
     ///////////////////////////////////////////////////////////////////
     // 15. Compute p1(X) and open  at v1
     ///////////////////////////////////////////////////////////////////
-
+    let step_15_timer = start_timer!(|| "step 15");
     // v1_id = u(alpha) + id(alpha) for when m is not a power of 2
     let v1_id = v1 + id_poly.evaluate(&alpha);
 
@@ -401,10 +418,11 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
 
     let (evals2, pi2) = KZGCommit::<E>::open_g1_batch(&srs.poly_ck, &p1_poly, None, &[v1_id]);
 
+    end_timer!(step_15_timer);
     ///////////////////////////////////////////////////////////////////
     // 16. Compute p2(X) and open p2 at alpha
     ///////////////////////////////////////////////////////////////////
-
+    let step_16_timer = start_timer!(|| "step 16");
     // p2(X) = zI(u(alpha)) + chi C_I( u(alpha) )
     let mut p2_poly = DensePolynomial::from_coefficients_slice(&[
         z_I.evaluate(&v1_id) + chi * c_I_poly.evaluate(&v1_id)
@@ -424,6 +442,7 @@ pub fn compute_lookup_proof<E: PairingEngine, R: RngCore>(
     // check that p2_poly(alpha) = 0
     assert!(evals3[0] == E::Fr::zero(), "p2(alpha) does not equal 0");
 
+    end_timer!(step_16_timer);
     ///////////////////////////////////////////////////////////////////
     // 17. Compose proof
     ///////////////////////////////////////////////////////////////////
@@ -621,6 +640,7 @@ pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
     LookupProverInput<E>,
     PublicParameters<E>, // SRS
 ) {
+    let timer = start_timer!(|| "generate lookup input");
     let n: usize = 8; // bitlength of poly degree
     let m: usize = 4;
     // let m: usize = (1<<(n/2-1)); //should be power of 2
@@ -658,6 +678,7 @@ pub fn generate_lookup_input<E: PairingEngine, R: RngCore>(
     let openings = KZGCommit::<E>::multiple_open::<E::G2Affine>(&c_poly, &pp.g2_powers, n);
     println!("Time to generate openings {:?}", now.elapsed());
 
+    end_timer!(timer);
     (
         LookupProverInput {
             c_poly,
