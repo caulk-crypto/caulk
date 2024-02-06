@@ -5,7 +5,7 @@
 // (4) hash_caulk_single is for hashing group and field elements into a field
 // element (5) random_field is for generating random field elements
 
-use crate::{compute_h,compute_h_23, group_dft, util::convert_to_bigints};
+use crate::{compute_h,compute_h_23, compute_h_evals, group_dft, util::convert_to_bigints};
 use ark_ec::{msm::VariableBaseMSM, AffineCurve, PairingEngine, ProjectiveCurve};
 use ark_ff::{Field, PrimeField};
 use ark_poly::{
@@ -148,6 +148,45 @@ impl<E: PairingEngine> KZGCommit<E> {
         let q2 = group_dft::<E::Fr, G::Projective>(&h2, p);
         end_timer!(dft_timer);
 
+        let normalization_timer = start_timer!(|| "batch normalization");
+        let res = G::Projective::batch_normalization_into_affine(q2.as_ref());
+        end_timer!(normalization_timer);
+
+        end_timer!(timer);
+        res
+    }
+
+        // compute all openings to c_poly using a smart formula
+    // This Code implements an algorithm for calculating n openings of a KZG vector
+    // commitment of size n in n log(n) time. The algorithm is by Feist and
+    // Khovratovich updated in the 2023 paper https://eprint.iacr.org/2023/033.pdf
+    pub fn multiple_open_24<G>(
+        c_poly: &DensePolynomial<E::Fr>, // c(X)
+        powers: &[G],                    // SRS
+        p: usize,
+    ) -> Vec<G>
+    where
+        G: AffineCurve<ScalarField = E::Fr> + Sized,
+    {
+        let timer = start_timer!(|| "multiple open");
+
+        let degree = c_poly.coeffs.len() - 1;
+        let input_domain: GeneralEvaluationDomain<E::Fr> = EvaluationDomain::new(degree).unwrap();
+
+        let h_timer = start_timer!(|| "compute h");
+        let powers: Vec<G::Projective> = powers.iter().map(|x| x.into_projective()).collect();
+        let h2 = compute_h_evals(c_poly, &powers, p);
+        end_timer!(h_timer);
+
+       
+        let dom_size = input_domain.size();
+        assert_eq!(1 << p, dom_size);
+        assert_eq!(degree + 1, dom_size);
+
+        let mut q2 = vec![h2[0]];
+        for i in 1..dom_size{
+            q2.push(h2[2*i]);
+        }
         let normalization_timer = start_timer!(|| "batch normalization");
         let res = G::Projective::batch_normalization_into_affine(q2.as_ref());
         end_timer!(normalization_timer);
@@ -686,7 +725,7 @@ pub mod tests {
         let mut rng = test_rng();
 
         // current kzg setup should be changed with output from a setup ceremony
-        let p: usize = 4;
+        let p: usize = 8;
         let max_degree: usize = 1 << p + 1;
         let actual_degree: usize = (1 << p) - 1;
         let pp = caulk_single_setup(max_degree, actual_degree, &mut rng);

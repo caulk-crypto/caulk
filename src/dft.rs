@@ -72,7 +72,7 @@ where
 // h_i= c_d[x^{d-i-1}]+c_{d-1}[x^{d-i-2}]+c_{d-2}[x^{d-i-3}]+\cdots +
 // c_{i+2}[x]+c_{i+1}[1]
 pub fn compute_h_23<F, G>(
-    c_poly: &DensePolynomial<F>, /* c(X) degree up to d<2^p , i.e. c_poly has at most d+1 coeffs
+    c_poly: &DensePolynomial<F>, /* c(X) degree up to d<=2^p , i.e. c_poly has at most d+1 coeffs
                                   * non-zero */
     powers: &[G], // SRS
     p: usize,
@@ -87,42 +87,101 @@ where
     let fpzero = F::zero();
     coeffs.resize(dom_size, fpzero);
 
-    // 1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d+2 [0]'s]
+    // 1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d [0]'s]
     let step1_timer = start_timer!(|| "step 1");
     let mut x_ext: Vec<G> = powers.iter().take(dom_size - 1).rev().copied().collect();
-    x_ext.resize(2 * dom_size, G::zero()); // filling 2d+2 neutral elements
+    x_ext.resize(2 * dom_size, G::zero()); // filling 2d neutral elements
     let y = group_dft::<F, G>(&x_ext, p + 1);
     end_timer!(step1_timer);
 
-    // 2. c_ext = [c_d, d zeroes, c_d,c_{0},c_1,...,c_{d-2},c_{d-1}]
+    // 2. c_ext = [  d zeroes,  c_{0},c_1,...,c_{d-2},c_{d-1}]
     let step2_timer = start_timer!(|| "step 2");
 
-    let mut c_ext = vec![coeffs[coeffs.len() - 1]];
+    let mut c_ext = vec![fpzero];
     c_ext.resize(dom_size, fpzero);
-    c_ext.push(coeffs[coeffs.len() - 1]);
-    for &e in coeffs.iter().take(coeffs.len() - 1) {
+    for &e in coeffs.iter().take(coeffs.len()) {
         c_ext.push(e);
     }
     assert_eq!(c_ext.len(), 2 * dom_size);
-    let v = field_dft::<F>(&c_ext, p + 1);
+    let mut v = field_dft::<F>(&c_ext, p + 1);
     end_timer!(step2_timer);
 
-    // 3. u = y o v
+    // 3. u = y o v o powers
     let step3_timer = start_timer!(|| "step 3");
+    let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(2*dom_size).unwrap();
+    for i in 0..2*dom_size{
+        v[i] = v[i].mul(input_domain.element(i));
+    }
     let u: Vec<_> = y
         .into_iter()
         .zip(v.into_iter())
         .map(|(a, b)| a.mul(b.into_repr()))
         .collect();
+
     end_timer!(step3_timer);
 
-    // 4. h_ext = idft_{2d+2}(u)
+    // 4. h_ext = idft_{2d}(u)
     let step4_timer = start_timer!(|| "step 4");
     let h_ext = group_inv_dft::<F, G>(&u, p + 1);
     end_timer!(step4_timer);
 
     end_timer!(timer);
     h_ext[0..dom_size].to_vec()
+}
+
+// compute all pre-proofs using DFT
+// h_i= c_d[x^{d-i-1}]+c_{d-1}[x^{d-i-2}]+c_{d-2}[x^{d-i-3}]+\cdots +
+// c_{i+2}[x]+c_{i+1}[1]
+pub fn compute_h_evals<F, G>(
+    c_poly: &DensePolynomial<F>, /* c(X) degree up to d<=2^p , i.e. c_poly has at most d+1 coeffs
+                                  * non-zero */
+    powers: &[G], // SRS
+    p: usize,
+) -> Vec<G>
+where
+    F: PrimeField,
+    G: ProjectiveCurve,
+{
+    let timer = start_timer!(|| "compute h");
+    let mut coeffs = c_poly.coeffs().to_vec();
+    let dom_size = 1 << p;
+    let fpzero = F::zero();
+    coeffs.resize(dom_size, fpzero);
+
+    // 1. x_ext = [[x^(d-1)], [x^{d-2},...,[x],[1], d [0]'s]
+    let step1_timer = start_timer!(|| "step 1");
+    let mut x_ext: Vec<G> = powers.iter().take(dom_size - 1).rev().copied().collect();
+    x_ext.resize(2 * dom_size, G::zero()); // filling 2d neutral elements
+    let y = group_dft::<F, G>(&x_ext, p + 1);
+    end_timer!(step1_timer);
+
+    // 2. c_ext = [  d zeroes,  c_{0},c_1,...,c_{d-2},c_{d-1}]
+    let step2_timer = start_timer!(|| "step 2");
+
+    let mut c_ext = vec![fpzero];
+    c_ext.resize(dom_size, fpzero);
+    for &e in coeffs.iter().take(coeffs.len()) {
+        c_ext.push(e);
+    }
+    assert_eq!(c_ext.len(), 2 * dom_size);
+    let mut v = field_dft::<F>(&c_ext, p + 1);
+    end_timer!(step2_timer);
+
+    // 3. u = y o v o powers
+    let step3_timer = start_timer!(|| "step 3");
+    let input_domain: GeneralEvaluationDomain<F> = EvaluationDomain::new(2*dom_size).unwrap();
+    for i in 0..2*dom_size{
+        v[i] = v[i].mul(input_domain.element(i));
+    }
+    let u: Vec<_> = y
+        .into_iter()
+        .zip(v.into_iter())
+        .map(|(a, b)| a.mul(b.into_repr()))
+        .collect();
+
+    end_timer!(step3_timer);
+    
+    u
 }
 
 // compute DFT of size @dom_size over vector of Fr elements
